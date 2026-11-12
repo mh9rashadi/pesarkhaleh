@@ -814,6 +814,33 @@ function setSid(key, id) {
   if (key === 'main') { if (id) state.sessionId = id; else delete state.sessionId; }
   else if (id) sess(key).sessionId = id; else delete sess(key).sessionId;
 }
+// Messages handled in the CURRENT session of a key (main: state.mainMsgCount; topic: S.msgCount). Reset on rotation.
+const getCount = (key) => (key === 'main' ? state.mainMsgCount : sess(key).msgCount) || 0;
+function setCount(key, n) { if (key === 'main') state.mainMsgCount = n; else sess(key).msgCount = n; }
+// Close a session: keep its summary in brain/topics and hand it to the next session (carry). The brain/model of the
+// topic (S.brain, state.model/router) is NOT touched, so the next session runs on the same model. Used by !new and
+// by the automatic rotation after ROTATE_AFTER messages.
+function closeSession(key, sid, sum) {
+  if (sum) {
+    const dir = join(brainDir, 'topics'); mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${key.replace('#', 'topic-')}-${new Date().toISOString().slice(0, 10)}-${sid.slice(0, 8)}.md`), `# ${key} ${sess(key)?.name || ''}\n\n${sum}\n`);
+    if (key === 'main') state.carry = sum; else sess(key).carry = sum;
+  }
+  setSid(key, null); setCount(key, 0); saveState();
+}
+// Auto-rotation (2026-11-12, owner's request): after this many messages in one session, the session is compacted
+// and a fresh one starts with the same model. 0 = off. Override with ROTATE_AFTER in .env.
+const ROTATE_AFTER = env.ROTATE_AFTER === undefined ? 100 : Number(env.ROTATE_AFTER) || 0;
+async function maybeRotate(key, reply) {
+  const sid = getSid(key);
+  if (!ROTATE_AFTER || !sid || getCount(key) < ROTATE_AFTER) return;
+  const sum = await summarizeSession(sid);
+  if (!sum) { log('rotate', key, 'summary failed; will try again after the next message'); return; }
+  const n = getCount(key);
+  closeSession(key, sid, sum);
+  log('rotate', key, 'after', n, 'messages');
+  await reply(`🔄 این گفتگو به ${n} پیام رسید؛ سشن تازه با همان مدل باز شد و خلاصه‌ی قبلی (کپی در \`brain/topics\`) به آن داده می‌شود.`);
+}
 const needsBrain = (key) => key !== 'main' && !Object.values(state.topics || {}).includes(Number(key.slice(1)));
 const brainLabel = (b) => `\`${b.model}\`${b.agent ? ' + agent `' + b.agent + '`' : ''}`;
 function brainMenu(key) {
@@ -1052,7 +1079,7 @@ function runClaude(prompt, role = 'chat', model = null, key = 'main', agent = nu
 
 const HELP = [
   '**دستورها:**',
-  '`!new` گفتگوی تازه؛ گفتگوی قبلی همین تاپیک فشرده می‌شود و خلاصه‌اش به سشن جدید می‌رسد (`!new force` بدون خلاصه)',
+  '`!new` گفتگوی تازه؛ گفتگوی قبلی همین تاپیک فشرده می‌شود و خلاصه‌اش به سشن جدید می‌رسد (`!new force` بدون خلاصه) · هر ۱۰۰ پیام هم خودکار همین کار با همان مدل انجام می‌شود',
   '`!brain [شماره|اسم] [agent]` مغز (مدل + ایجنت) همین تاپیک؛ هر تاپیکِ تازه یک سشن جدا دارد و اول مغزش را می‌پرسم',
   '`!about [متن|off]` شناسنامه‌ی همیشگی همین تاپیک — به سیستم‌پرامپت هر سشن این تاپیک اضافه می‌شود و با !new از بین نمی‌رود',
   '`!stop` توقف کار در حال اجرا (پیام‌های منتظر تجمیع را هم دور می‌ریزد)',
@@ -1092,7 +1119,7 @@ async function instant(cmd, arg, to, post) {
       await reply([
         `مدل: \`${state.model}\` (اجرا: \`${resolveModel('chat')}\`) · پوشه: \`${state.cwd}\` · verbose: ${state.verbose ? 'on' : 'off'}`,
         `روتر: ${routerCfg().on ? `روشن (\`${routerCfg().easy}\`/\`${routerCfg().normal}\`/\`${routerCfg().hard}\`) · آمار: ${Object.entries(routerCfg().stats).map(([k, v]) => `${k} ${v}`).join(' · ')}` : 'خاموش'}`,
-        `سشن: \`${getSid(sessKey(to))?.slice(0, 8) || 'تازه'}\` (${sessKey(to) === 'main' ? 'اصلی' : 'تاپیک ' + sessKey(to) + (sess(sessKey(to)).brain ? '، مغز ' + sess(sessKey(to)).brain.model : '')}) · ${running.has(sessKey(to)) ? 'این‌جا در حال کار' : 'این‌جا بیکار'} · همزمان: ${running.size}/${MAX_PARALLEL}${running.size ? ' (' + [...running.keys()].map((k) => (k === 'main' ? 'اصلی' : sess(k)?.name || k)).join('، ') + ')' : ''} · صف کل: ${queue}`,
+        `سشن: \`${getSid(sessKey(to))?.slice(0, 8) || 'تازه'}\` (${sessKey(to) === 'main' ? 'اصلی' : 'تاپیک ' + sessKey(to) + (sess(sessKey(to)).brain ? '، مغز ' + sess(sessKey(to)).brain.model : '')}) · پیام‌های این سشن: ${getCount(sessKey(to))}${ROTATE_AFTER ? '/' + ROTATE_AFTER : ''} · ${running.has(sessKey(to)) ? 'این‌جا در حال کار' : 'این‌جا بیکار'} · همزمان: ${running.size}/${MAX_PARALLEL}${running.size ? ' (' + [...running.keys()].map((k) => (k === 'main' ? 'اصلی' : sess(k)?.name || k)).join('، ') + ')' : ''} · صف کل: ${queue}`,
         `هزینه‌ی تقریبی تا الان: $${state.cost.toFixed(2)} · روشن از ${Math.round((Date.now() - startedAt) / 60000)} دقیقه پیش`,
       ].join('\n'));
       return true;
@@ -1250,12 +1277,7 @@ function enqueue(post, cmd, arg) {
         await reply('⏳ دارم گفتگوی قبلی این تاپیک را فشرده می‌کنم…');
         const sum = await summarizeSession(sid);
         if (!sum && arg !== 'force') return reply('❌ خلاصه نشد؛ گفتگوی قبلی دست‌نخورده ماند. دوباره `!new` بزن، یا `!new force` برای شروع بدون خلاصه.');
-        if (sum) {
-          const dir = join(brainDir, 'topics'); mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, `${key.replace('#', 'topic-')}-${new Date().toISOString().slice(0, 10)}-${sid.slice(0, 8)}.md`), `# ${key} ${sess(key)?.name || ''}\n\n${sum}\n`);
-          if (key === 'main') state.carry = sum; else sess(key).carry = sum;
-        }
-        setSid(key, null); saveState();
+        closeSession(key, sid, sum);
         return reply(sum ? '✅ گفتگوی تازه شروع شد؛ خلاصه‌ی قبلی (کپی‌اش در `brain/topics`) به سشن جدید داده می‌شود.' : 'گفتگوی تازه شروع شد (بدون خلاصه).');
       }
       case '/brain': {
@@ -1339,6 +1361,8 @@ function enqueue(post, cmd, arg) {
       if (q.id) { await react(q.id, 'hourglass_flowing_sand', false); await react(q.id, ok ? 'white_check_mark' : 'x'); }
       if (q.tg) await tgReact(q.tg, ok ? '👌' : '🤷');
     }
+    // Count this session's messages (a batch counts every message in it); rotate at ROTATE_AFTER.
+    if (getSid(key)) { setCount(key, getCount(key) + parts.length); saveState(); await maybeRotate(key, reply); }
     if (existsSync(restartFlag)) { unlinkSync(restartFlag); await restartWhenIdle(target); }
   }
 }
