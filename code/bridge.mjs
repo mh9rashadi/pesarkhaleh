@@ -1267,16 +1267,21 @@ async function instant(cmd, arg, to, post) {
       await reply('verbose: ' + (state.verbose ? 'on' : 'off'));
       return true;
     case '/trace': {
-      // Last N requests with per-stage timings. Stage names: dl=دانلود ویس · stt=موتورهای تبدیل (✓/✗ و ثانیه‌ها)
-      // · go=صف و تجمیع · files=دانلود فایل‌ها · brain=اجرای AI · (total). Full JSONL: trace.log
+      // Last N requests with per-stage timings, in plain Persian (owner: «این چی میگه من نمیفهم»).
+      // Stage codes → words: dl=دانلود ویس · stt=تبدیل به متن · go=صف و تجمیع · files=فایل‌ها · brain=هوش مصنوعی.
       const n = Math.min(Math.max(Number(arg) || 8, 1), 30);
       const list = traces.slice(-n);
       if (!list.length) { await reply('هنوز هیچ trace ای نیست.'); return true; }
+      const FA = { dl1: 'دانلود', dl2: 'دانلود(۲)', dl3: 'دانلود(۳)', stt: 'تبدیل به متن', go: 'صف', files: 'فایل‌ها', brain: 'هوش مصنوعی', send: 'ارسال' };
+      const faNote = (n) => !n ? '' : n === 'ok' ? '(اوکی)' : n === 'miss' ? '(نشد)' : n === 'PARSE-FAIL' ? '(خراب)' : /^FAIL/.test(n) ? '(' + n.replace('FAIL', 'ناموفق') + ')' : '(' + n + ')';
       const lines = list.map((t) => {
-        const st = t.steps.map((s) => `${s.s}${s.note ? '(' + s.note + ')' : ''}+${((s.at - (t.steps[t.steps.indexOf(s) - 1]?.at || t.t0)) / 1000).toFixed(0)}s`).join(' → ');
-        return `${t.status === 'ok' ? '✅' : t.status === 'err' ? '⚠️' : t.status ? '❌' : '⏳'} \`${t.id}\` ${t.kind} ${t.status ? (t.ms / 1000).toFixed(0) + 's' : '…'}: ${st}`;
+        const st = t.steps.map((s, i) => {
+          const prev = t.steps[i - 1]?.at || t.t0;
+          return `${FA[s.s] || s.s} ${((s.at - prev) / 1000).toFixed(0)} ثانیه${faNote(s.note)}`;
+        }).join(' ← ');
+        return `${t.status === 'ok' ? '✅' : t.status === 'err' ? '⚠️' : t.status ? '❌' : '⏳'} ${t.kind === 'voice' ? 'ویس' : t.kind === 'job' ? 'کار خودکار' : 'پیام'} — جمعاً ${t.status ? (t.ms / 1000).toFixed(0) + ' ثانیه' : 'هنوز در مسیر'}: ${st}`;
       });
-      await reply(`🔎 ${list.length} درخواست آخر (از جدیدترین):\n${lines.reverse().join('\n')}\nجزئیات کامل: \`trace.log\` — مراحل: dl دانلود ویس · stt موتورها · go صف/تجمیع · files فایل‌ها · brain اجرای AI`);
+      await reply(`🔎 ${list.length} درخواست آخر (از جدیدترین):\n${lines.reverse().join('\n')}\n«تبدیل به متن» برای ویس‌هاست؛ عدد کنار هر مرحله = ثانیه‌ای که برداشت.`);
       return true;
     }
     case '/about': {
