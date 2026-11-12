@@ -55,21 +55,36 @@ def gemini(path):
         {"inline_data": {"mime_type": mime, "data": data}},
         {"text": "این فایل صوتی فارسی را کلمه‌به‌کلمه پیاده‌کن. فقط خودِ متن گفتار را به فارسی بنویس — بدون توضیح، بدون گیومه، بدون مقدمه. کلمات پرکننده (مثل «اِممم») و تکرارها را همان‌طور که گفته شده نگه دار. اگر بخشی نامفهوم بود همان را خالی بگذار و ادامه بده."},
     ]}]}
-    # The full flash sometimes 503s under load; lite is the fallback (verified 2026-11-12).
+    # Bounded ladder (must fit the bridge's 240s): flash → flash-lite (503s under load, verified 2026-11-12).
+    # Transport resets (the laptop's network drops TLS to Cloudflare intermittently) get one quick retry;
+    # if the network is dead we bail to the local engine instead of grinding through timeouts.
+    import time
+
     last = None
     for m in [model, "gemini-flash-lite-latest"]:
-        try:
-            r = httpx.post(
-                f"{base}/v1beta/models/{m}:generateContent",
-                # X-goog-api-key for direct calls; Authorization Bearer is what the Worker relay checks.
-                headers={"X-goog-api-key": auth, "Authorization": "Bearer " + auth},
-                timeout=120, json=prompt,
-            )
-            r.raise_for_status()
-            return (r.json()["candidates"][0]["content"]["parts"][0]["text"] or "").strip() or None
-        except Exception as e:  # noqa: BLE001 — try the next model
-            last = e
-            print("gemini(%s) failed: %s" % (m, e), file=sys.stderr)
+        transport_fail = 0
+        for attempt in range(2):
+            try:
+                r = httpx.post(
+                    f"{base}/v1beta/models/{m}:generateContent",
+                    # X-goog-api-key for direct calls; Authorization Bearer is what the Worker relay checks.
+                    headers={"X-goog-api-key": auth, "Authorization": "Bearer " + auth},
+                    timeout=30, json=prompt,
+                )
+                r.raise_for_status()
+                return (r.json()["candidates"][0]["content"]["parts"][0]["text"] or "").strip() or None
+            except httpx.HTTPStatusError as e:
+                last = e
+                print("gemini(%s) HTTP %s" % (m, e.response.status_code), file=sys.stderr)
+                break  # busy/gone — next model
+            except Exception as e:  # noqa: BLE001 — connection reset: quick retry, then give up on clouds
+                last = e
+                transport_fail += 1
+                print("gemini(%s) try %s failed: %s" % (m, attempt + 1, e), file=sys.stderr)
+                if transport_fail >= 2:
+                    print("gemini: network to the relay looks dead, falling back", file=sys.stderr)
+                    raise last
+                time.sleep(4)
     raise last
 
 
