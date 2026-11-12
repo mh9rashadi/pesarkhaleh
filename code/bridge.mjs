@@ -6,6 +6,7 @@ import { spawn, execFile } from 'node:child_process';
 import https from 'node:https';
 import {
   readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, renameSync, unlinkSync, statSync,
+  rmSync, copyFileSync,
 } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -271,6 +272,7 @@ async function tgSend(method, to, body) {
       delete state.topics[k]; saveState(); await ensureTopics();
       try { return await tgApi(method, { ...body, ...tgDest(to) }); } catch {}
     }
+    if (/thread not found|TOPIC_ID_INVALID/i.test(e.message) && k?.startsWith('#')) topicGone(k);
     if (tgDest(to).chat_id !== TG_OWNER) { log('group send failed, using DM:', e.message); return tgApi(method, { ...body, chat_id: TG_OWNER }); }
     throw e;
   }
@@ -881,6 +883,64 @@ function summarizeSession(sid) {
     p.stdin.end('Compact this whole conversation into a hand-over summary for a fresh session that continues the same topic and has NO other memory of it. Write it in Persian, max ~450 words, sections: هدف و زمینه · تصمیم‌های گرفته‌شده · وضعیت کار (چه شد، چه ماند) · فایل‌ها/مسیرها/لینک‌ها/شناسه‌ها که باید بماند · ترجیح‌ها و قول‌ها · قدم بعدی. Facts only, nothing invented, no greeting.');
   });
 }
+// --- Topic clean-up (2026-11-12, owner's request). A topic deleted in Telegram must not leave its session behind.
+// The Bot API sends NO event when a topic is deleted, so a deleted topic is noticed when a send to it fails with
+// "message thread not found" (any reply, job or the probe below) → topicGone() queues a purge on that topic's own
+// chain. `!delete` does the same on purpose and then really deletes the topic (deleteForumTopic).
+// Archive ("trash"): brain/trash/<date>-<name>-<key>.md (summary + metadata + charter) and the raw transcript .jsonl.
+const trashDir = join(brainDir, 'trash');
+const ownTopicKeys = () => Object.values(state.topics || {}).map((n) => '#' + n); // the bot's own topics: never purged
+function findTranscript(sid) {
+  const roots = [join(process.env.CLAUDE_CONFIG_DIR || join(process.env.USERPROFILE || '', '.claude'), 'projects'),
+    join(process.env.USERPROFILE || '', '.claude', 'projects')];
+  for (const r of roots) {
+    try { for (const d of readdirSync(r)) { const p = join(r, d, sid + '.jsonl'); if (existsSync(p)) return p; } } catch {}
+  }
+  return null;
+}
+async function archiveTopic(key, why) {
+  const S = sessions()[key] || {};
+  const sid = S.sessionId;
+  const sum = sid ? await summarizeSession(sid) : null;
+  mkdirSync(trashDir, { recursive: true });
+  const day = new Date().toISOString().slice(0, 10);
+  const base = `${day}-${String(S.name || 'topic').replace(/[<>:"/\\|?*\s]+/g, '_').slice(0, 40)}-${key.replace('#', 't')}`;
+  const charter = charterOf(key);
+  const tr = sid && findTranscript(sid);
+  if (tr) try { copyFileSync(tr, join(trashDir, base + '.jsonl')); } catch (e) { log('trash transcript', e.message); }
+  writeFileSync(join(trashDir, base + '.md'), [
+    `# 🗑 ${S.name || key} (${key})`,
+    `- پاک شد: ${new Date().toISOString()} · دلیل: ${why}`,
+    `- مغز: ${S.brain ? S.brain.model + (S.brain.agent ? ' + ' + S.brain.agent : '') : '-'} · سشن: ${sid || '-'} · پیام‌های سشن آخر: ${S.msgCount || 0}`,
+    `- متن کامل گفتگو: ${tr ? base + '.jsonl' : 'پیدا نشد'}`,
+    charter ? `\n## شناسنامه‌ی تاپیک\n${charter}` : '',
+    `\n## خلاصه‌ی گفتگو\n${sum || (sid ? '(خلاصه نشد؛ متن کامل در فایل jsonl است)' : '(سشنی نداشت)')}`,
+    S.carry ? `\n## خلاصه‌ی سشن قبلی که هنوز مصرف نشده بود\n${S.carry}` : '',
+  ].join('\n') + '\n');
+  try { if (existsSync(charterFile(key))) renameSync(charterFile(key), join(trashDir, base + '-about.md')); } catch {}
+  try { rmSync(outboxOf(key), { recursive: true, force: true }); } catch {}
+  delete sessions()[key]; pendingPosts.delete(key); saveState();
+  log('topic archived', key, S.name || '', why, '→', base);
+  return base;
+}
+const goneQueued = new Set();
+function topicGone(key) {
+  if (goneQueued.has(key) || !sessions()[key] || ownTopicKeys().includes(key) || !TG_GROUP) return;
+  goneQueued.add(key);
+  log('topic deleted in Telegram, purging', key);
+  enqueue({ src: 'tg:' + key, job: true, message: '' }, '/purge', 'deleted');
+}
+// Startup (and every 12 h) probe for topics deleted earlier. reopenForumTopic is the only silent check that works
+// (tested 2026-11-12): deleted → "TOPIC_ID_INVALID", open → "TOPIC_NOT_MODIFIED". sendChatAction / no-op
+// editForumTopic return ok even for deleted topics. Side effect: a topic the owner CLOSED is reopened.
+async function probeTopics() {
+  if (!TG || !TG_GROUP) return;
+  for (const key of Object.keys(sessions())) {
+    if (!key.startsWith('#') || ownTopicKeys().includes(key)) continue;
+    try { await tgApi('reopenForumTopic', { chat_id: TG_GROUP, message_thread_id: Number(key.slice(1)) }); }
+    catch (e) { if (/TOPIC_ID_INVALID|thread not found/i.test(e.message)) topicGone(key); }
+  }
+}
 async function askBrain(to) {
   const key = sessKey(to);
   if (key === 'main') return;
@@ -1081,6 +1141,7 @@ const HELP = [
   '**دستورها:**',
   '`!new` گفتگوی تازه؛ گفتگوی قبلی همین تاپیک فشرده می‌شود و خلاصه‌اش به سشن جدید می‌رسد (`!new force` بدون خلاصه) · هر ۱۰۰ پیام هم خودکار همین کار با همان مدل انجام می‌شود',
   '`!brain [شماره|اسم] [agent]` مغز (مدل + ایجنت) همین تاپیک؛ هر تاپیکِ تازه یک سشن جدا دارد و اول مغزش را می‌پرسم',
+  '`!delete` پاک کردن کامل همین تاپیک: گفتگو فشرده و در brain/trash بایگانی، سشن فراموش، خود تاپیک هم از تلگرام حذف (با `!delete yes` تأیید)',
   '`!about [متن|off]` شناسنامه‌ی همیشگی همین تاپیک — به سیستم‌پرامپت هر سشن این تاپیک اضافه می‌شود و با !new از بین نمی‌رود',
   '`!stop` توقف کار در حال اجرا (پیام‌های منتظر تجمیع را هم دور می‌ریزد)',
   '`!batch <ثانیه>|off` پیام‌های پشت‌سرهم در یک جا (پیش‌فرض ۳ ثانیه، حداکثر ۴۵) صبر می‌کنند و یک‌جا به AI می‌روند',
@@ -1280,6 +1341,28 @@ function enqueue(post, cmd, arg) {
         closeSession(key, sid, sum);
         return reply(sum ? '✅ گفتگوی تازه شروع شد؛ خلاصه‌ی قبلی (کپی‌اش در `brain/topics`) به سشن جدید داده می‌شود.' : 'گفتگوی تازه شروع شد (بدون خلاصه).');
       }
+      case '/delete': {
+        const key = sessKey(target);
+        if (key === 'main' || ownTopicKeys().includes(key)) return reply('فقط تاپیک‌هایی که خودت ساخته‌ای با `!delete` پاک می‌شوند (نه سشن اصلی و نه تاپیک‌های خود پسرخاله).');
+        const name = sess(key).name || key;
+        if (!/^(yes|ok|تایید|تأیید|بله)$/i.test(arg)) return reply(`⚠️ تاپیک «${name}» کامل پاک می‌شود: گفتگو فشرده و در brain/trash بایگانی می‌شود، سشنش فراموش می‌شود و خود تاپیک از تلگرام حذف می‌شود.\nبرای تأیید بنویس: \`!delete yes\``);
+        await reply('⏳ دارم گفتگو را فشرده و بایگانی می‌کنم، بعد تاپیک را پاک می‌کنم…');
+        const base = await archiveTopic(key, 'owner !delete');
+        let del = null;
+        try { await tgApi('deleteForumTopic', { chat_id: TG_GROUP, message_thread_id: Number(key.slice(1)) }); } catch (e) { del = e.message; }
+        if (del) return reply(`✅ بایگانی شد (\`brain/trash/${base}.md\`) و سشن پاک شد، ولی حذف خود تاپیک نشد: ${del}\nدستی پاکش کن (ربات باید ادمین با دسترسی Manage Topics باشد).`);
+        return replyTo(`🗑 تاپیک «${name}» پاک شد. خلاصه و متن کامل گفتگو: \`brain/trash/${base}.md\``, tgTo('system'));
+      }
+      case '/purge': {
+        // Internal: the topic was deleted in Telegram (topicGone). Its own chain runs this, so no run of it is active.
+        if (!post.job) return reply('دستور ناشناخته. `!help` را بزن.');
+        const key = sessKey(target);
+        goneQueued.delete(key);
+        if (!sessions()[key]) return;
+        const name = sessions()[key].name || key;
+        const base = await archiveTopic(key, 'deleted in Telegram');
+        return replyTo(`🗑 تاپیک «${name}» در تلگرام پاک شده بود؛ سشنش جمع شد و خلاصه در \`brain/trash/${base}.md\` است.`, tgTo('system'));
+      }
       case '/brain': {
         const key = sessKey(target);
         if (key === 'main') return reply('این‌جا سشن اصلی است؛ مغزش را با `!model` و `!router` تنظیم می‌کنی. `!brain` برای تاپیک‌هاست.');
@@ -1461,7 +1544,7 @@ connect();
 // First start: don't fire every job of the day at once.
 if (!state.jobs) { state.jobs = { brief: Date.now(), digest: Date.now(), evening: Date.now() - 86400e3 }; saveState(); }
 setInterval(tick, 60000);
-if (TG && TG_OWNER) { log('telegram bot polling'); await ensureTopics(); tgPoll(); }
+if (TG && TG_OWNER) { log('telegram bot polling'); await ensureTopics(); tgPoll(); setTimeout(probeTopics, 20000); setInterval(probeTopics, 12 * 3600e3); }
 if (state.announceRestart) {
   const to = state.announceRestart;
   delete state.announceRestart; saveState();

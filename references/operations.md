@@ -5,6 +5,7 @@
 |---|---|
 | `!help` | list |
 | `!new [force]` | fresh session for this topic: the old one is compacted into a ≤450-word hand-over summary (copy in `brain/topics/`), given to the fresh session; `force` skips the summary |
+| `!delete` / `!delete yes` | in an owner topic: archive the chat (summary + full .jsonl) to `brain/trash/`, forget the session, delete the topic in Telegram (deleteForumTopic). Refused for main and the bot's own topics |
 | `!stop` | kill the Claude run of THIS topic/session (instant); `!stop all` = every run. `!status` shows which topics are running (x/MAX_PARALLEL) |
 | `!status` | model, cwd, verbose, session, busy, queue, approx cost, uptime (instant) |
 | `!brain <n\|name> [agent]` | pick this topic's brain (model [+ agent]); every owner-made topic gets its own session and asks first (instant)
