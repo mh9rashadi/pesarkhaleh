@@ -165,6 +165,29 @@ if (!existsSync(schedulePath)) writeFileSync(schedulePath, JSON.stringify(SCHEDU
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+// --- Request tracing (2026-11-13): every user request gets a 4-char id; steps mark stage boundaries
+// (arrival → download tries → stt engine attempts → queue wait → brain → send) with wall-clock times.
+// One summary line goes to bridge.log (TRACE id …), the full record to trace.log (JSONL); `!trace [n]` shows
+// the last few from chat. Built to answer "why did this take 5 minutes?" without guessing.
+const traces = [];
+function newTrace(kind, label) {
+  const tr = { id: Math.random().toString(16).slice(2, 6), kind, label, t0: Date.now(), steps: [] };
+  traces.push(tr); if (traces.length > 100) traces.shift();
+  return tr;
+}
+const trStep = (tr, s, note) => { if (tr) tr.steps.push({ s, at: Date.now(), note: note || undefined }); };
+function trEnd(tr, status) {
+  if (!tr) return;
+  tr.status = status; tr.ms = Date.now() - tr.t0;
+  let prev = tr.t0; const parts = [];
+  for (const st of tr.steps) { parts.push(`${st.s}=${((st.at - prev) / 1000).toFixed(1)}s${st.note ? ' ' + st.note : ''}`); prev = st.at; }
+  try { appendFileSync(join(here, 'trace.log'), JSON.stringify({ ...tr, steps: tr.steps.map((s) => ({ s: s.s, rel: s.at - tr.t0, note: s.note })) }) + '\n'); } catch {}
+  log(`TRACE ${tr.id} ${tr.kind}${tr.label ? ' ' + tr.label : ''} ${status} total=${(tr.ms / 1000).toFixed(1)}s | ${parts.join(' | ')}`);
+}
+const trLine = (tr) => tr
+  ? `${tr.status === 'ok' ? '✅' : tr.status ? '⚠️' : '⏳'} ${tr.id} ${tr.kind}${tr.steps.length ? ' · ' + tr.steps.map((s) => s.s).join('→') : ''} ${tr.status ? (tr.ms / 1000).toFixed(0) + 's' : 'در مسیر'}`
+  : '';
+
 async function api(path, { method = 'GET', body, raw } = {}) {
   const r = await fetch(MM_URL + '/api/v4' + path, {
     method,
@@ -189,28 +212,30 @@ async function tgFetch(method, body) {
   if (TG_RELAY) {
     // The laptop's network drops for seconds at a time: retry the relay (2 s, then 6 s) before giving up, so a
     // finished reply is not lost to one blip (2026-11-12). Typing pings are not worth retrying.
+    // Every fetch carries a 30 s abort (2026-11-13): undici's default is ~300 s, one blackholed request
+    // could hang a voice download for five minutes.
     const tries = method === 'sendChatAction' ? 1 : 3;
     for (let i = 0; i < tries; i++) {
       if (i) await new Promise((r) => setTimeout(r, i === 1 ? 2000 : 6000));
       try {
-        const r = await fetch(`${env.WORKER_URL}/laptop/tg/${method}`, { ...opts, headers: { ...opts.headers, ...relayAuth() } });
+        const r = await fetch(`${env.WORKER_URL}/laptop/tg/${method}`, { ...opts, headers: { ...opts.headers, ...relayAuth() }, signal: AbortSignal.timeout(30000) });
         if (r.headers.get('content-type')?.includes('json')) return await r.json();
         log('tg relay', method, r.status);
       } catch (e) { log('tg relay', method, e.message, i + 1 < tries ? '(retry)' : ''); }
     }
     if (method === 'sendChatAction') return { ok: true, result: true };
   }
-  return (await fetch(`https://api.telegram.org/bot${TG}/${method}`, opts)).json();
+  return (await fetch(`https://api.telegram.org/bot${TG}/${method}`, { ...opts, signal: AbortSignal.timeout(30000) })).json();
 }
 async function tgFile(path) {
   if (TG_RELAY) {
     try {
-      const r = await fetch(`${env.WORKER_URL}/laptop/tgfile/${path}`, { headers: relayAuth() });
+      const r = await fetch(`${env.WORKER_URL}/laptop/tgfile/${path}`, { headers: relayAuth(), signal: AbortSignal.timeout(30000) });
       if (r.ok) return r;
       log('tg relay file', r.status);
     } catch (e) { log('tg relay file', e.message); }
   }
-  return fetch(`https://api.telegram.org/file/bot${TG}/${path}`);
+  return fetch(`https://api.telegram.org/file/bot${TG}/${path}`, { signal: AbortSignal.timeout(30000) });
 }
 async function tgApi(method, body) {
   const j = await tgFetch(method, body);
@@ -573,24 +598,39 @@ If no transcript arrives, say in one line that خانوم جلسه‌ای didn't
 // Resolves {engine, text} or null. System python (not the telegram-mcp venv) has faster_whisper + httpx.
 const PY = existsSync(join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe'))
   ? join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe') : 'python';
-async function transcribeVoice(m) {
+async function transcribeVoice(m, tr) {
   // Direct api.telegram.org fetches flap with the network; updates/sends survive via the worker, so retry.
+  // Bounded: stop retrying the download after ~2 min total, whatever the inner fetches did.
   let f = null;
-  for (let i = 0; i < 3 && !f; i++) {
+  const dlDeadline = Date.now() + 120000;
+  for (let i = 0; i < 3 && !f && Date.now() < dlDeadline; i++) {
     let files = [];
     try { files = await tgDownload(m); } catch (e) { log('voice download', e.message); }
     f = files.find((x) => /\.(ogg|oga|mp4|mp3|m4a|wav|webm)$/i.test(x));
+    trStep(tr, 'dl' + (i + 1), f ? 'ok' : 'miss');
     if (!f && i < 2) { log('voice download retry', i + 1); await new Promise((r) => setTimeout(r, 4000)); }
   }
   if (!f) { log('voice download: no audio file'); return null; }
+  const tStt = Date.now();
+  // Circuit breaker: if the worker relay hasn't answered a poll in 90 s, the cloud engines can only waste
+  // ~50 s on resets before whisper runs — skip them (measured 2026-11-13: 90 s → ~40 s for a 5 s voice).
+  const relayOk = !workerPoll.lastOk || Date.now() - workerPoll.lastOk < 90000;
   return new Promise((resolve) => {
     execFile(PY, [join(here, 'transcribe.py'), f], {
       windowsHide: true, timeout: 240000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GROQ_API_KEY: env.GROQ_API_KEY || '', GROQ_URL: env.GROQ_URL || '', GROQ_AUTH: env.GROQ_AUTH || '', GROQ_MODEL: env.GROQ_MODEL || '', GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_MODEL: env.V2T_MODEL || '', V2T_LANG: env.V2T_LANG || '' },
+      env: { ...process.env, V2T_CLOUD: relayOk ? '' : '0', GROQ_API_KEY: env.GROQ_API_KEY || '', GROQ_URL: env.GROQ_URL || '', GROQ_AUTH: env.GROQ_AUTH || '', GROQ_MODEL: env.GROQ_MODEL || '', GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_MODEL: env.V2T_MODEL || '', V2T_LANG: env.V2T_LANG || '' },
     }, (err, out) => {
-      if (err) { log('transcribe', (err.killed ? 'timeout' : err.message)); return resolve(null); }
-      try { const j = JSON.parse(out.trim().split('\n').pop()); resolve(j.text ? j : null); }
-      catch { log('transcribe parse', String(out).slice(0, 200)); resolve(null); }
+      if (err) {
+        log('transcribe', (err.killed ? 'timeout' : err.message));
+        trStep(tr, 'stt', 'FAIL ' + ((Date.now() - tStt) / 1000).toFixed(0) + 's');
+        return resolve(null);
+      }
+      try {
+        const j = JSON.parse(out.trim().split('\n').pop());
+        trStep(tr, 'stt', j.attempts ? j.attempts.map((a) => `${a.e}${a.ok ? '✓' : '✗'}${(a.ms / 1000).toFixed(0)}s`).join(' ') : j.engine);
+        resolve(j.text ? j : null);
+      }
+      catch { log('transcribe parse', String(out).slice(0, 200)); trStep(tr, 'stt', 'PARSE-FAIL'); resolve(null); }
     });
   });
 }
@@ -602,12 +642,14 @@ function ownerMessage(m, src) {
   // so batching, per-topic sessions and !new compaction all see plain text. خانوم جلسه‌ای is only the fallback.
   if ((m.voice || m.video_note) && !m.caption) {
     tgReact(m, '👀');
-    transcribeVoice(m).then((t) => {
+    const tr = newTrace('voice', src);
+    transcribeVoice(m, tr).then((t) => {
       if (t?.text) {
         log('voice →', t.engine, t.text.slice(0, 60));
-        handle({ src, tg: m, noFiles: true, message: `[Voice message, auto-transcribed (${t.engine}); this is محمدحسین speaking — treat it exactly like his typed message]\n${t.text}` });
+        handle({ src, tg: m, noFiles: true, trace: tr, message: `[Voice message, auto-transcribed (${t.engine}); this is محمدحسین speaking — treat it exactly like his typed message]\n${t.text}` });
         return;
       }
+      trEnd(tr, 'stt-failed');
       if (TG_GROUP && m.chat.id === TG_GROUP) {
         // Bots can't summon bots, so the owner's account mentions the transcriber on his own voice (his
         // permission, 2026-10-31). summon_transcriber.py can only do that one thing; see its header.
@@ -675,6 +717,7 @@ async function workerPoll() {
       for (const u of updates) tgUpdate(u);
       if (fails) log('worker poll recovered after', fails, 'failed polls');
       fails = 0;
+      workerPoll.lastOk = Date.now(); // the voice→text circuit breaker trusts the relay while this is fresh
     } catch (e) {
       // transient network blips are common; log at most once a minute, with context
       const now = Date.now();
@@ -1174,6 +1217,7 @@ const HELP = [
   '`!stop` توقف کار در حال اجرا (پیام‌های منتظر تجمیع را هم دور می‌ریزد)',
   '`!batch <ثانیه>|off` پیام‌های پشت‌سرهم در یک جا (پیش‌فرض ۳ ثانیه، حداکثر ۴۵) صبر می‌کنند و یک‌جا به AI می‌روند',
   '`!status` وضعیت، مدل، صف و هزینه',
+  '`!trace [n]` زمان‌بندی مراحل n درخواست آخر (دانلود، تبدیل ویس، صف، اجرای AI) — ریشه‌یابی کندی؛ جزئیات در trace.log',
   '`!model` عوض کردن مدل (ثابت می‌شود و روتر خاموش) — alias ها: opus/sonnet/fable/haiku؛ اسم واقعی هوش‌کد: glm-5.3, glm-5.3-flash, claude-opus-5-5, claude-sonnet-5-5, gpt-5.5, gpt-6.1-sol, MiniMax-M3, k3',
   '`!router on|off` تقسیم خودکار مدل بر اساس سختی پیام · `!router easy|normal|hard <model>` تغییر لایه',
   '`!cwd <path>` پوشه‌ی کاری Claude',
@@ -1242,6 +1286,19 @@ async function instant(cmd, arg, to, post) {
       state.verbose = arg !== 'off'; saveState();
       await reply('verbose: ' + (state.verbose ? 'on' : 'off'));
       return true;
+    case '/trace': {
+      // Last N requests with per-stage timings. Stage names: dl=دانلود ویس · stt=موتورهای تبدیل (✓/✗ و ثانیه‌ها)
+      // · go=صف و تجمیع · files=دانلود فایل‌ها · brain=اجرای AI · (total). Full JSONL: trace.log
+      const n = Math.min(Math.max(Number(arg) || 8, 1), 30);
+      const list = traces.slice(-n);
+      if (!list.length) { await reply('هنوز هیچ trace ای نیست.'); return true; }
+      const lines = list.map((t) => {
+        const st = t.steps.map((s) => `${s.s}${s.note ? '(' + s.note + ')' : ''}+${((s.at - (t.steps[t.steps.indexOf(s) - 1]?.at || t.t0)) / 1000).toFixed(0)}s`).join(' → ');
+        return `${t.status === 'ok' ? '✅' : t.status === 'err' ? '⚠️' : t.status ? '❌' : '⏳'} \`${t.id}\` ${t.kind} ${t.status ? (t.ms / 1000).toFixed(0) + 's' : '…'}: ${st}`;
+      });
+      await reply(`🔎 ${list.length} درخواست آخر (از جدیدترین):\n${lines.reverse().join('\n')}\nجزئیات کامل: \`trace.log\` — مراحل: dl دانلود ویس · stt موتورها · go صف/تجمیع · files فایل‌ها · brain اجرای AI`);
+      return true;
+    }
     case '/about': {
       const key = sessKey(to);
       if (key === 'main') { await reply('`!about` شناسنامه‌ی تاپیک‌هاست؛ سشن اصلی سیستم‌پرامپت ثابت دارد.'); return true; }
@@ -1307,6 +1364,7 @@ function handle(post) {
   let arg = rest.join(' ');
   const hk = sessKey(post.src || 'gap');
   if (hk !== 'main' && sess(hk).awaiting && !post.job && !cmd.startsWith('/') && /^\d+$/.test(text) && parseBrain(text)) { cmd = '/brain'; arg = text; }
+  if (!post.trace && !cmd.startsWith('/')) post.trace = newTrace(post.job ? 'job' : 'msg', hk);
   const bk = hk + '|' + (post.src || 'gap');
   if (cmd.startsWith('/')) {
     if (cmd === '/stop') dropBatch(bk); else if (cmd !== '/batch') flushBatch(bk); // keep order: pending text goes before the command
@@ -1357,6 +1415,7 @@ function enqueue(post, cmd, arg) {
   next.then(() => { if (chains.get(qk) === next) chains.delete(qk); });
   async function work() {
     queue--;
+    trStep(post.trace, 'go'); // t0→go = batch wait + queue wait (and, for voices, download+stt already stepped)
     const target = post.src || 'gap'; // this message's destination (local: other topics run at the same time)
     const reply = (t, d = target) => replyTo(t, d);
     switch (cmd) {
@@ -1454,6 +1513,7 @@ function enqueue(post, cmd, arg) {
     const typing = isTg(target) && TG && !post.inline
       ? setInterval(() => tgApi('sendChatAction', { ...tgDest(target), action: 'typing' }).catch(() => {}), 4500) : null;
     const files = await downloadFiles(post);
+    trStep(post.trace, 'files', files.length ? files.length + '' : '');
     const topic = isTg(target) && topicOf(target);
     let prompt = (isTg(target) ? `[via Telegram${topic ? `, group topic «${topic}»` : ''}]\n` : '') + post.message;
     if (state.liteBacklog?.length) {
@@ -1474,9 +1534,11 @@ function enqueue(post, cmd, arg) {
     const tierModel = fixed || await routeModel(prompt, { hasFiles: files.length > 0, skip: !!post.job || cmd !== undefined });
     const { text, ok } = await runClaude(prompt, post.job ? 'jobs' : 'chat', tierModel, key, S?.brain?.agent && !post.job ? S.brain.agent : null, target);
     clearInterval(typing);
+    trStep(post.trace, 'brain', tierModel);
     log('>>', text.slice(0, 80));
     await reply(post.inline ? '📌 ' + post.inline.query + '\n' + await tgInlineFinish(post.inline, text) : text);
     await flushOutbox(target, outboxOf(key));
+    trEnd(post.trace, ok ? 'ok' : 'err');
     for (const q of parts) {
       if (q.id) { await react(q.id, 'hourglass_flowing_sand', false); await react(q.id, ok ? 'white_check_mark' : 'x'); }
       if (q.tg) await tgReact(q.tg, ok ? '👌' : '🤷');
@@ -1582,6 +1644,17 @@ connect();
 if (!state.jobs) { state.jobs = { brief: Date.now(), digest: Date.now(), evening: Date.now() - 86400e3 }; saveState(); }
 setInterval(tick, 60000);
 if (TG && TG_OWNER) { log('telegram bot polling'); await ensureTopics(); tgPoll(); setTimeout(probeTopics, 20000); setInterval(probeTopics, 12 * 3600e3); }
+// Warm STT server (2026-11-13): detached, loads the whisper model once at boot so each voice skips the
+// ~25 s cold load. transcribe.py falls back to in-process loading if it ever dies. Port probe keeps us
+// from stacking copies across restarts.
+try {
+  const probe = await fetch('http://127.0.0.1:47475/ping', { signal: AbortSignal.timeout(1000) }).catch(() => null);
+  if (!probe) {
+    const srv = spawn(PY, [join(here, 'transcribe-server.py')], { detached: true, stdio: 'ignore', windowsHide: true });
+    srv.unref();
+    log('v2t warm server spawned');
+  } else log('v2t warm server already up');
+} catch (e) { log('v2t server spawn', e.message); }
 if (state.announceRestart) {
   const to = state.announceRestart;
   delete state.announceRestart; saveState();

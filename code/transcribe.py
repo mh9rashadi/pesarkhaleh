@@ -88,6 +88,20 @@ def gemini(path):
     raise last
 
 
+def whisperd(path):
+    # The warm local server (transcribe-server.py, spawned by the bridge): model already in RAM, no cold load.
+    url = os.environ.get("V2T_LOCAL_URL", "").strip() or "http://127.0.0.1:47475/stt"
+    import httpx
+
+    with open(path, "rb") as f:
+        r = httpx.post(url, content=f.read(), headers={"X-V2T-Lang": os.environ.get("V2T_LANG") or "fa"}, timeout=240)
+    r.raise_for_status()
+    j = r.json()
+    if not j.get("ok"):
+        raise RuntimeError(j.get("err") or "stt server error")
+    return (j.get("text") or "").strip() or None
+
+
 def whisper(path):
     # PyAV >= 19 dropped the `metadata_errors` kwarg that faster-whisper 1.2.1 still passes to av.open()
     # (it only suppressed noisy metadata warnings, so dropping it is safe).
@@ -122,21 +136,31 @@ def main():
         sys.exit(2)
     path = sys.argv[1]
     text, engine = None, None
-    for name, fn in (("gemini", gemini), ("groq", groq)):
+    attempts = []  # per-engine timings for the bridge's trace (!trace): {"e": name, "ms": …, "ok"/"err"}
+    import time
+
+    def attempt(name, fn):
+        t0 = time.time()
         try:
-            text, engine = fn(path), name
-        except Exception as e:  # noqa: BLE001 — one engine failing must not kill the other
+            t = fn(path)
+        except Exception as e:  # noqa: BLE001 — one engine failing must not kill the others
+            attempts.append({"e": name, "ms": round((time.time() - t0) * 1000), "err": str(e)[:80]})
             print("%s failed: %s" % (name, e), file=sys.stderr)
+            return None
+        attempts.append({"e": name, "ms": round((time.time() - t0) * 1000), "ok": bool(t)})
+        return t
+
+    # V2T_CLOUD=0 (bridge circuit breaker: relay unreachable) → local engines only, no ~50 s of resets.
+    cloud = os.environ.get("V2T_CLOUD", "1") != "0"
+    engines = ([("gemini", gemini), ("groq", groq)] if cloud else []) + [("whisperd", whisperd), ("whisper", whisper)]
+    for name, fn in engines:
+        text = attempt(name, fn)
         if text:
+            engine = name
             break
     if not text:
-        try:
-            text, engine = whisper(path), "whisper"
-        except Exception as e:  # noqa: BLE001
-            print("whisper failed: %s" % e, file=sys.stderr)
-    if not text:
         sys.exit(3)
-    print(json.dumps({"engine": engine, "text": text}, ensure_ascii=False))
+    print(json.dumps({"engine": engine, "text": text, "attempts": attempts}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

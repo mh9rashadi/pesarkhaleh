@@ -1,0 +1,6 @@
+total 90s exit 0
+{"engine": "whisper", "text": "یک توست امتحان میکنیم یه بار مسیر رو از اول توضیح بده", "attempts": [{"e": "gemini", "ms": 36698, "err": "[WinError 10054] An existing connection was forcibly closed by the remote host"}, {"e": "groq", "ms": 15985, "err": "[WinError 10054] An existing connection was forcibly closed by the remote host"}, {"e": "whisper", "ms": 37000, "ok": true}]}
+
+ERR: lling back
+gemini failed: [WinError 10054] An existing connection was forcibly closed by the remote host
+groq failed: [WinError 10054] An existing connection was forcibly closed by the remote host
