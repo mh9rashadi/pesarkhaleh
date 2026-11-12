@@ -1,0 +1,13 @@
+# Archived messages from other Gap channels (coworkers' messages) stay local
+inbox/
+# Runtime: files sent to/from Claude, restart flag, rollback copies
+uploads/
+outbox/
+restart.flag
+.last-good/
+.broken/
+node_modules/
+# Brain notes summarise coworkers' messages: local only
+brain/
+# Secrets never go to GitHub; .env.example is the empty template
+.env

@@ -1,0 +1,13 @@
+﻿{
+  "name": "pesarkhaleh",
+  "account_id": "46f655b5da3cb6be2451b7b85f8c882b",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "vars": { "TG_OWNER_ID": "7278666599", "TG_GROUP_ID": "-1004487332493" }
+  // Secrets (wrangler secret put): ANTHROPIC_API_KEY, TG_BOT_TOKEN, TG_WEBHOOK_SECRET, LAPTOP_SECRET
+}
