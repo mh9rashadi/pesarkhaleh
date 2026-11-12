@@ -35,27 +35,64 @@ def gemini(path, attempts):
         {"inline_data": {"mime_type": mime, "data": data}},
         {"text": "این فایل صوتی فارسی را کلمه‌به‌کلمه پیاده‌کن. فقط خودِ متن گفتار را به فارسی بنویس — بدون توضیح، بدون گیومه، بدون مقدمه. کلمات پرکننده (مثل «اِممم») و تکرارها را همان‌طور که گفته شده نگه دار. اگر بخشی نامفهوم بود همان را خالی بگذار و ادامه بده."},
     ]}]}
-    # One attempt per model, 25 s cap each (owner wants fast-or-honest, not slow-but-eventual): full flash
-    # first, lite when flash 503s under load. X-goog-api-key for direct; Authorization Bearer is what the
-    # Worker relay authenticates.
+    # PREFERRED (2026-11-13 overnight finding): the laptop's network resets LARGE uploads to Cloudflare
+    # while small POSTs pass — so with V2T_VIA_WORKER=1 and a Telegram file_id, the audio never leaves:
+    # the Worker fetches it from Telegram and calls Gemini itself (worker /laptop/v2t). The old
+    # inline-base64 path below stays as the fallback for runs without a file_id (e.g. offline probes).
     last = None
-    for m in [model, "gemini-flash-lite-latest"]:
+    file_id = os.environ.get("V2T_FILE_ID", "").strip()
+    if os.environ.get("V2T_VIA_WORKER") == "1" and file_id:
         t0 = time.time()
+        vw_url = (os.environ.get("V2T_WORKER_URL", "").strip() or base.replace("/laptop/gemini", "")) + "/laptop/v2t"
         try:
             r = httpx.post(
-                f"{base}/v1beta/models/{m}:generateContent",
-                headers={"X-goog-api-key": auth, "Authorization": "Bearer " + auth},
-                timeout=25, json=prompt,
+                vw_url,
+                headers={"Authorization": "Bearer " + auth},
+                timeout=90, json={"file_id": file_id},
             )
             r.raise_for_status()
-            text = (r.json()["candidates"][0]["content"]["parts"][0]["text"] or "").strip()
-            attempts.append({"e": "gemini:" + m, "ms": round((time.time() - t0) * 1000), "ok": bool(text)})
-            if text:
-                return text
-        except Exception as e:  # noqa: BLE001 — next model, then give up honestly
-            last = e
-            attempts.append({"e": "gemini:" + m, "ms": round((time.time() - t0) * 1000), "err": str(e)[:80]})
-            print("gemini(%s) failed: %s" % (m, e), file=sys.stderr)
+            j = r.json()
+            if not j.get("ok"):
+                raise RuntimeError(j.get("err") or "v2t worker error")
+            text = (j.get("text") or "").strip()
+            attempts.append({"e": "v2t:worker", "ms": round((time.time() - t0) * 1000), "ok": bool(text)})
+            print("v2t(worker) %.0fs" % ((time.time() - t0)), file=sys.stderr)
+            return text or None
+        except Exception as e:  # noqa: BLE001 — fall through to the inline path
+            attempts.append({"e": "v2t:worker", "ms": round((time.time() - t0) * 1000), "err": str(e)[:60]})
+            print("v2t(worker) failed: %s" % e, file=sys.stderr)
+    # Full flash first, lite when flash 503s under load; 20 s cap per attempt. Connection resets (the
+    # laptop's network kills TLS to Cloudflare intermittently) get one quick retry on a fresh connection.
+    # V2T_FORCE4=1 pins IPv4 (overnight-test knob, 2026-11-13). X-goog-api-key for direct calls;
+    # Authorization Bearer is what the Worker relay authenticates.
+    client_kw = {"transport": httpx.HTTPTransport(local_address="0.0.0.0")} if os.environ.get("V2T_FORCE4") == "1" else {}
+    with httpx.Client(**client_kw) as client:
+        for m in [model, "gemini-flash-lite-latest"]:
+            for attempt in range(2):
+                t0 = time.time()
+                tag = "gemini:" + m + ("" if attempt == 0 else "#2")
+                try:
+                    r = client.post(
+                        f"{base}/v1beta/models/{m}:generateContent",
+                        headers={"X-goog-api-key": auth, "Authorization": "Bearer " + auth},
+                        timeout=20, json=prompt,
+                    )
+                    r.raise_for_status()
+                    text = (r.json()["candidates"][0]["content"]["parts"][0]["text"] or "").strip()
+                    attempts.append({"e": tag, "ms": round((time.time() - t0) * 1000), "ok": bool(text)})
+                    if text:
+                        return text
+                    break  # answered but empty → next model
+                except httpx.HTTPStatusError as e:
+                    attempts.append({"e": tag, "ms": round((time.time() - t0) * 1000), "err": "HTTP %d" % e.response.status_code})
+                    print("gemini(%s) HTTP %s" % (m, e.response.status_code), file=sys.stderr)
+                    break  # busy/gone → next model
+                except Exception as e:  # noqa: BLE001 — transport reset: quick retry on a fresh connection
+                    last = e
+                    attempts.append({"e": tag, "ms": round((time.time() - t0) * 1000), "err": str(e)[:60]})
+                    print("gemini(%s) try %s failed: %s" % (m, attempt + 1, e), file=sys.stderr)
+                    if attempt < 1:
+                        time.sleep(3)
     return None
 
 

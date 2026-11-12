@@ -2,3 +2,6 @@
 {"id":"d97d","kind":"msg","label":"#51","t0":1794517634938,"steps":[{"s":"go","rel":3007},{"s":"files","rel":3259},{"s":"brain","rel":180444,"note":"glm-5.3"}],"status":"ok","ms":181003}
 {"id":"73bc","kind":"msg","label":"#794","t0":1794517762500,"steps":[{"s":"go","rel":3010},{"s":"files","rel":3199},{"s":"brain","rel":192726,"note":"claude-opus-5-5"}],"status":"ok","ms":193364}
 {"id":"47af","kind":"voice","label":"tg:#794","t0":1794518331042,"steps":[{"s":"dl1","rel":783,"note":"ok"},{"s":"stt","rel":33711,"note":"FAIL 33s"}],"status":"stt-failed","ms":33711}
+{"id":"c9ac","kind":"msg","label":"#956","t0":1794518482183,"steps":[{"s":"go","rel":3001},{"s":"files","rel":3450},{"s":"brain","rel":81062,"note":"claude-opus-5-5"}],"status":"ok","ms":81325}
+{"id":"f0fd","kind":"msg","label":"#794","t0":1794518426575,"steps":[{"s":"go","rel":3009},{"s":"files","rel":3376},{"s":"brain","rel":118204,"note":"claude-opus-5-5"}],"status":"ok","ms":139710}
+{"id":"6f40","kind":"voice","label":"tg:#794","t0":1794518689006,"steps":[{"s":"dl1","rel":735,"note":"ok"},{"s":"stt","rel":33717,"note":"FAIL 33s"}],"status":"stt-failed","ms":33717}

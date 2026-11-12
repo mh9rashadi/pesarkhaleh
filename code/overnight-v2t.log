@@ -1,0 +1,5 @@
+{"t":"2026-11-12T21:30:31.035Z","agent":"overnight v2t agent up; 1859 minutes to 08:00; payload 51 KB"}
+{"t":"2026-11-12T21:31:09.666Z","agent":"overnight v2t agent up; 419 minutes to 08:00; payload 51 KB"}
+{"t":"2026-11-12T21:33:15.955Z","c":1,"root":{"ok":true,"status":200,"ms":636},"small":{"ok":true,"status":200,"ms":1699},"py":{"def":{"ok":false,"ms":15430,"err":"[WinError 10054] An existing connection was forcibly closed "},"v4":{"ok":false,"ms":15463,"err":"[WinError 10054] An existing connection was forcibly closed "}},"e2e":{"ok":false,"code":3}}
+{"t":"2026-11-12T21:37:22.799Z","agent":"respawn with v2t test + worker fix deployed"}
+{"t":"2026-11-12T21:37:22.960Z","agent":"overnight v2t agent up; 413 minutes to 08:00; payload 51 KB"}

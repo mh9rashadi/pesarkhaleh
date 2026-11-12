@@ -276,8 +276,75 @@ export default {
       });
     }
 
+    // Voice→text IN the Worker (2026-11-13, overnight finding): the laptop's network resets LARGE uploads
+    // to Cloudflare while small requests pass (root/small POST → 200 OK, 51 KB audio POST → 10054 every
+    // time). So the audio never travels from the laptop: the bridge sends only a Telegram file_id and this
+    // Worker fetches the file from Telegram and calls Gemini from here (CF→TG and CF→Google are fine).
+    //   POST /laptop/v2t  {"file_id": "..."}          production: fetch from Telegram → Gemini
+    //                      {"audio_b64": "..."}       same, audio supplied inline (tests)
+    //                      {"ping": true}             health: tiny Gemini call, no audio
+    // Gemini flash first, flash-lite on 503/429. Auth: Bearer LAPTOP_SECRET.
+    if (url.pathname === "/laptop/v2t") {
+      if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) {
+        return new Response("forbidden", { status: 403 });
+      }
+      if (!env.GEMINI_API_KEY) return Response.json({ ok: false, err: "gemini key not set" }, { status: 503 });
+      const body = (await req.json().catch(() => ({}))) as { file_id?: string; audio_b64?: string; mime?: string; ping?: boolean };
+      const b64 = (buf: ArrayBuffer) => {
+        const u = new Uint8Array(buf);
+        let s = "";
+        for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000));
+        return btoa(s);
+      };
+      const gcall = async (parts: unknown[], m: string) => {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-goog-api-key": env.GEMINI_API_KEY || "" },
+          body: JSON.stringify({ contents: [{ parts }] }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 120)}`);
+        const j = (await r.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+        return (j.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+      };
+      const transcribe = async (data: string, mime: string) => {
+        const parts = [
+          { inline_data: { mime_type: mime, data } },
+          { text: "این فایل صوتی فارسی را کلمه‌به‌کلمه پیاده‌کن. فقط خودِ متن گفتار را به فارسی بنویس — بدون توضیح، بدون گیومه، بدون مقدمه. کلمات پرکننده (مثل «اِممم») و تکرارها را همان‌طور که گفته شده نگه دار. اگر بخشی نامفهوم بود همان را خالی بگذار و ادامه بده." },
+        ];
+        try {
+          return await gcall(parts, "gemini-flash-latest");
+        } catch (e) {
+          if (!/HTTP (429|503)/.test(String(e))) throw e;
+          return await gcall(parts, "gemini-flash-lite-latest"); // flash under load → lite (2026-11-12)
+        }
+      };
+      try {
+        if (body.ping) {
+          await gcall([{ text: "یک کلمه بنویس." }], "gemini-flash-lite-latest");
+          return Response.json({ ok: true, ping: true });
+        }
+        let data = body.audio_b64 || "";
+        let mime = body.mime || "audio/ogg";
+        if (!data && body.file_id) {
+          const g = await (await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(body.file_id)}`)).json() as { ok: boolean; description?: string; result?: { file_path: string } };
+          if (!g.ok || !g.result?.file_path) return Response.json({ ok: false, err: "tg getFile: " + (g.description || "no file_path") });
+          const f = await fetch(`https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${g.result.file_path}`);
+          if (!f.ok) return Response.json({ ok: false, err: "tg file " + f.status });
+          const ct = f.headers.get("content-type") || "";
+          mime = ct.includes("mpeg") ? "audio/mpeg" : ct.includes("mp4") ? "audio/mp4" : ct.includes("webm") ? "audio/webm" : "audio/ogg";
+          data = b64(await f.arrayBuffer());
+        }
+        if (!data) return Response.json({ ok: false, err: "file_id or audio_b64 required" }, { status: 400 });
+        const text = await transcribe(data, mime);
+        return Response.json({ ok: true, text });
+      } catch (e) {
+        return Response.json({ ok: false, err: String(e).slice(0, 160) });
+      }
+    }
+
     // Gemini relay for the laptop (2026-11-12): Google 403s the laptop's region. Same pattern as Groq.
     //   POST /laptop/gemini/v1beta/models/<model>:generateContent
+    // (Superseded for audio by /laptop/v2t above — large uploads get reset — but kept for small calls.)
     if (url.pathname.startsWith("/laptop/gemini/")) {
       if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) {
         return new Response("forbidden", { status: 403 });

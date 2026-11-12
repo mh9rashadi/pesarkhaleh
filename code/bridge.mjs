@@ -608,8 +608,8 @@ async function transcribeVoice(m, tr) {
   const tStt = Date.now();
   return new Promise((resolve) => {
     execFile(PY, [join(here, 'transcribe.py'), f], {
-      windowsHide: true, timeout: 75000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '' },
+      windowsHide: true, timeout: 110000, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_VIA_WORKER: env.V2T_VIA_WORKER || '', V2T_WORKER_URL: env.WORKER_URL || '', V2T_FILE_ID: (m.voice || m.video_note || m.audio)?.file_id || '' },
     }, (err, out) => {
       if (err) {
         log('transcribe', (err.killed ? 'timeout' : err.message));
