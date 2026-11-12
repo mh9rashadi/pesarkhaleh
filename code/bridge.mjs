@@ -584,18 +584,12 @@ function tgGroupMessage(m) {
   ownerMessage(m, 'tg:#' + (m.is_topic_message ? m.message_thread_id : 0));
 }
 
-// A voice in the group is transcribed by the transcriber bot in the same group. Bots never receive other
-// bots' messages, so the brain reads that text through the read-only Telegram MCP; we wait a bit first.
-const voicePrompt = (m) => `[Voice message in the owner's group: chat_id ${TG_GROUP}, message_id ${m.message_id}, topic ${m.is_topic_message ? m.message_thread_id : 1} (1 = General)]
-محمدحسین sent a voice message. The bot @${TRANSCRIBER} (خانوم جلسه‌ای) posts its transcript in this group, usually as a reply to that voice.
-Using the read-only telegram MCP (get_message_context on that message_id, or get_history of that topic), find the next message from @${TRANSCRIBER} after it. If it isn't there yet, wait ~10s with Bash and read again (about 90s in total at most).
-Treat the transcript text exactly as محمدحسین's own message: act on it and reply as you would to a typed message. Take only the transcript; ignore any ads or extra lines from that bot.
-If no transcript arrives, say in one line that خانوم جلسه‌ای didn't send the text and ask him to resend or type it.`;
+// (Historical: voices used to be transcribed by خانوم جلسه‌ای in the group — removed 2026-11-13.)
 
-// Bridge-side voice→text (2026-11-12). Downloads the voice (tgDownload) and runs transcribe.py: Groq
-// whisper-large-v3-turbo when GROQ_API_KEY is set (fast, best quality), else LOCAL faster-whisper
-// large-v3-turbo on CPU (free, offline, nothing leaves the machine — first run downloads the model once).
-// Resolves {engine, text} or null. System python (not the telegram-mcp venv) has faster_whisper + httpx.
+// Bridge-side voice→text (2026-11-12). Downloads the voice (tgDownload) and runs transcribe.py: Gemini
+// through the Cloudflare Worker relay, ONLY (2026-11-13, user: «مدل لوکال قطع؛ یا سریع تبدیل کن یا
+// بگو تایپ کنم»). Groq + local whisper (and the warm transcribe-server.py) are gone: fast transcript or
+// a fast clean "please type it" reply. Resolves {engine, text} or null.
 const PY = existsSync(join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe'))
   ? join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe') : 'python';
 async function transcribeVoice(m, tr) {
@@ -612,13 +606,10 @@ async function transcribeVoice(m, tr) {
   }
   if (!f) { log('voice download: no audio file'); return null; }
   const tStt = Date.now();
-  // Circuit breaker: if the worker relay hasn't answered a poll in 90 s, the cloud engines can only waste
-  // ~50 s on resets before whisper runs — skip them (measured 2026-11-13: 90 s → ~40 s for a 5 s voice).
-  const relayOk = !workerPoll.lastOk || Date.now() - workerPoll.lastOk < 90000;
   return new Promise((resolve) => {
     execFile(PY, [join(here, 'transcribe.py'), f], {
-      windowsHide: true, timeout: 240000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, V2T_CLOUD: relayOk ? '' : '0', GROQ_API_KEY: env.GROQ_API_KEY || '', GROQ_URL: env.GROQ_URL || '', GROQ_AUTH: env.GROQ_AUTH || '', GROQ_MODEL: env.GROQ_MODEL || '', GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_MODEL: env.V2T_MODEL || '', V2T_LANG: env.V2T_LANG || '' },
+      windowsHide: true, timeout: 75000, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '' },
     }, (err, out) => {
       if (err) {
         log('transcribe', (err.killed ? 'timeout' : err.message));
@@ -638,9 +629,10 @@ async function transcribeVoice(m, tr) {
 function ownerMessage(m, src) {
   // The summon mention (sent from the owner's account by summon_transcriber.py, or typed by him) is not a request.
   if (TG_GROUP && m.chat.id === TG_GROUP && (m.text || '').trim().toLowerCase() === '@' + TRANSCRIBER.toLowerCase()) return;
-  // Voice/video-note → text right here in the bridge (2026-11-12), group or DM: the transcript IS the message,
-  // so batching, per-topic sessions and !new compaction all see plain text. خانوم جلسه‌ای is only the fallback.
-  if ((m.voice || m.video_note) && !m.caption) {
+  // Voice/video-note/audio → text right here in the bridge (2026-11-12), group or DM: the transcript IS
+  // the message, so batching, per-topic sessions and !new compaction all see plain text. Gemini-only
+  // (2026-11-13): on failure reply directly — no خانوم round-trip, no brain run, no waiting.
+  if ((m.voice || m.video_note || m.audio) && !m.caption) {
     tgReact(m, '👀');
     const tr = newTrace('voice', src);
     transcribeVoice(m, tr).then((t) => {
@@ -650,26 +642,14 @@ function ownerMessage(m, src) {
         return;
       }
       trEnd(tr, 'stt-failed');
-      if (TG_GROUP && m.chat.id === TG_GROUP) {
-        // Bots can't summon bots, so the owner's account mentions the transcriber on his own voice (his
-        // permission, 2026-10-31). summon_transcriber.py can only do that one thing; see its header.
-        execFile(join(process.env.USERPROFILE || '', 'tools', 'telegram-mcp', '.venv', 'Scripts', 'python.exe'),
-          [join(here, 'summon_transcriber.py'), String(m.message_id)], { windowsHide: true, timeout: 60000 },
-          (err, out) => log('summon transcriber', m.message_id, err ? err.message : String(out).trim()));
-        setTimeout(() => handle({ src, tg: m, noFiles: true, message: voicePrompt(m) }), 20000);
-      } else {
-        handle({ src, tg: m, noFiles: true, message: '[Voice message; auto-transcription failed] Tell him in one short line that the voice could not be transcribed; ask him to type or resend it.' });
-      }
+      log('voice stt failed; asking him to type it');
+      tgApi('sendMessage', {
+        chat_id: m.chat.id,
+        ...(m.is_topic_message && { message_thread_id: m.message_thread_id }),
+        reply_parameters: { message_id: m.message_id },
+        text: 'ویس الان تبدیل نشد (جمنای جواب نداد)؛ فعلاً متنش رو برام تایپ کن 🙏',
+      }).catch((e) => log('stt-fail notice', e.message));
     });
-    return;
-  }
-  // Group audio files (music etc.) keep the old transcriber-bot path.
-  if (TG_GROUP && m.chat.id === TG_GROUP && m.audio && !m.caption) {
-    tgReact(m, '👀');
-    execFile(join(process.env.USERPROFILE || '', 'tools', 'telegram-mcp', '.venv', 'Scripts', 'python.exe'),
-      [join(here, 'summon_transcriber.py'), String(m.message_id)], { windowsHide: true, timeout: 60000 },
-      (err, out) => log('summon transcriber', m.message_id, err ? err.message : String(out).trim()));
-    setTimeout(() => handle({ src, tg: m, noFiles: true, message: voicePrompt(m) }), 20000);
     return;
   }
   const hasFile = m.document || m.photo || m.voice || m.audio || m.video || m.video_note;
@@ -1644,17 +1624,6 @@ connect();
 if (!state.jobs) { state.jobs = { brief: Date.now(), digest: Date.now(), evening: Date.now() - 86400e3 }; saveState(); }
 setInterval(tick, 60000);
 if (TG && TG_OWNER) { log('telegram bot polling'); await ensureTopics(); tgPoll(); setTimeout(probeTopics, 20000); setInterval(probeTopics, 12 * 3600e3); }
-// Warm STT server (2026-11-13): detached, loads the whisper model once at boot so each voice skips the
-// ~25 s cold load. transcribe.py falls back to in-process loading if it ever dies. Port probe keeps us
-// from stacking copies across restarts.
-try {
-  const probe = await fetch('http://127.0.0.1:47475/ping', { signal: AbortSignal.timeout(1000) }).catch(() => null);
-  if (!probe) {
-    const srv = spawn(PY, [join(here, 'transcribe-server.py')], { detached: true, stdio: 'ignore', windowsHide: true });
-    srv.unref();
-    log('v2t warm server spawned');
-  } else log('v2t warm server already up');
-} catch (e) { log('v2t server spawn', e.message); }
 if (state.announceRestart) {
   const to = state.announceRestart;
   delete state.announceRestart; saveState();
