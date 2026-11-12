@@ -104,6 +104,15 @@
   monkeypatches av.open), huggingface_hub had to stay <1.0. خانوم جلسه‌ای is now only the FALLBACK for the group
   (summon + voicePrompt, 20s); group AUDIO files (music) still use it; in the DM a failed transcription just asks
   him to retype. Voice logs as `voice → <engine> <text…>`.
+- **Engine ladder (2026-11-12, after live testing)**: `gemini` → `groq` → local whisper. Gemini flash via the
+  user's own AI-Studio key WON the real-Persian test (voice 869 «یک دو سه امتحان کن» vs whisper's «یکی تو سیم
+  دامن کنید»): inline base64 audio + a Persian verbatim prompt, model ladder gemini-flash-latest →
+  gemini-flash-lite-latest on 503 (flash was overloaded; lite answered). Groq stayed as 2nd (its account 403s:
+  org-level region ban, two keys tried) and local faster-whisper as the always-there 3rd. **The laptop's network is
+  country-blocked by Google AND Groq**, so both cloud engines go through Worker relays: `/laptop/gemini/<path>` →
+  generativelanguage.googleapis.com (auth = Bearer LAPTOP_SECRET to the Worker; X-goog-api-key replaced with the
+  Worker-stored GEMINI_API_KEY) and `/laptop/groq/transcriptions`. Keys live in .env (GEMINI_*, GROQ_*) and as
+  Worker secrets (push-secrets.mjs). Env passthrough for the python spawn is explicit in bridge.mjs.
   (no file download): the brain reads @KhanoomJBot's next message via the read-only MCP (retries up to ~90s) and
   treats it as the owner's message. If no text arrives it says so in one line.
 - `!send <text>` as a reply to a 📨 notice: the bot sends the text to that guest (id parsed from the notice).

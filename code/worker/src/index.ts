@@ -13,6 +13,7 @@ export interface Env {
   TG_WEBHOOK_SECRET: string;
   LAPTOP_SECRET: string;
   GROQ_API_KEY?: string; // Groq whisper for the laptop's voice→text (added 2026-11-12)
+  GEMINI_API_KEY?: string; // Gemini voice→text for the laptop (added 2026-11-12)
   TG_OWNER_ID: string;
   TG_GROUP_ID?: string; // owner's private forum group
 }
@@ -271,6 +272,22 @@ export default {
       return fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, ...(ct ? { "Content-Type": ct } : {}) },
+        body: req.body,
+      });
+    }
+
+    // Gemini relay for the laptop (2026-11-12): Google 403s the laptop's region. Same pattern as Groq.
+    //   POST /laptop/gemini/v1beta/models/<model>:generateContent
+    if (url.pathname.startsWith("/laptop/gemini/")) {
+      if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) {
+        return new Response("forbidden", { status: 403 });
+      }
+      if (!env.GEMINI_API_KEY) return new Response("gemini key not set", { status: 503 });
+      const path = url.pathname.slice("/laptop/gemini/".length);
+      if (!/^[A-Za-z0-9.:/-]+$/.test(path) || path.includes("..")) return new Response("bad path", { status: 400 });
+      return fetch(`https://generativelanguage.googleapis.com/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-goog-api-key": env.GEMINI_API_KEY },
         body: req.body,
       });
     }

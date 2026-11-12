@@ -33,6 +33,46 @@ def groq(path):
     return (r.json().get("text") or "").strip() or None
 
 
+def gemini(path):
+    # Gemini audio transcription (best Persian quality, free tier). GEMINI_URL/GEMINI_AUTH route through
+    # the Worker relay when the laptop's region is blocked by Google. Audio goes inline as base64.
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    base = os.environ.get("GEMINI_URL", "").strip() or "https://generativelanguage.googleapis.com"
+    auth = os.environ.get("GEMINI_AUTH", "").strip() or key
+    model = os.environ.get("GEMINI_MODEL") or "gemini-flash-latest"
+    if not auth:
+        return None
+    import base64
+    import httpx
+
+    mime = {
+        "oga": "audio/ogg", "ogg": "audio/ogg", "opus": "audio/ogg", "mp3": "audio/mpeg",
+        "m4a": "audio/mp4", "mp4": "audio/mp4", "wav": "audio/wav", "webm": "audio/webm",
+    }.get(path.rsplit(".", 1)[-1].lower(), "audio/ogg")
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    prompt = {"contents": [{"parts": [
+        {"inline_data": {"mime_type": mime, "data": data}},
+        {"text": "این فایل صوتی فارسی را کلمه‌به‌کلمه پیاده‌کن. فقط خودِ متن گفتار را به فارسی بنویس — بدون توضیح، بدون گیومه، بدون مقدمه. کلمات پرکننده (مثل «اِممم») و تکرارها را همان‌طور که گفته شده نگه دار. اگر بخشی نامفهوم بود همان را خالی بگذار و ادامه بده."},
+    ]}]}
+    # The full flash sometimes 503s under load; lite is the fallback (verified 2026-11-12).
+    last = None
+    for m in [model, "gemini-flash-lite-latest"]:
+        try:
+            r = httpx.post(
+                f"{base}/v1beta/models/{m}:generateContent",
+                # X-goog-api-key for direct calls; Authorization Bearer is what the Worker relay checks.
+                headers={"X-goog-api-key": auth, "Authorization": "Bearer " + auth},
+                timeout=120, json=prompt,
+            )
+            r.raise_for_status()
+            return (r.json()["candidates"][0]["content"]["parts"][0]["text"] or "").strip() or None
+        except Exception as e:  # noqa: BLE001 — try the next model
+            last = e
+            print("gemini(%s) failed: %s" % (m, e), file=sys.stderr)
+    raise last
+
+
 def whisper(path):
     # PyAV >= 19 dropped the `metadata_errors` kwarg that faster-whisper 1.2.1 still passes to av.open()
     # (it only suppressed noisy metadata warnings, so dropping it is safe).
@@ -67,10 +107,13 @@ def main():
         sys.exit(2)
     path = sys.argv[1]
     text, engine = None, None
-    try:
-        text, engine = groq(path), "groq"
-    except Exception as e:  # noqa: BLE001 — one engine failing must not kill the other
-        print("groq failed: %s" % e, file=sys.stderr)
+    for name, fn in (("gemini", gemini), ("groq", groq)):
+        try:
+            text, engine = fn(path), name
+        except Exception as e:  # noqa: BLE001 — one engine failing must not kill the other
+            print("%s failed: %s" % (name, e), file=sys.stderr)
+        if text:
+            break
     if not text:
         try:
             text, engine = whisper(path), "whisper"
