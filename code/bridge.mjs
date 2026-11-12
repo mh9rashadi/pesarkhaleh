@@ -771,6 +771,31 @@ function tgHtml(t) {
     .replace(/^[ \t]*[-*][ \t]+/gm, '• ');
 }
 
+// Undelivered replies (2026-11-12): when the network is down even after the relay retries and the DM fallback, the
+// text is kept in state.unsent and resent every minute (kept 24 h), so a finished answer is not silently lost.
+// Only network errors are queued; a Telegram refusal (bad request) is not retried.
+const NET_ERR = /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|network|timeout|aborted/i;
+function queueUnsent(to, text) {
+  (state.unsent ||= []).push({ to, text, at: Date.now() }); saveState();
+  log('unsent queued', to, state.unsent.length);
+}
+let unsentBusy = false;
+async function flushUnsent() {
+  if (unsentBusy || !state.unsent?.length) return;
+  unsentBusy = true;
+  try {
+    while (state.unsent.length) {
+      const u = state.unsent[0];
+      if (Date.now() - u.at > 24 * 3600e3) { state.unsent.shift(); saveState(); continue; }
+      const late = `⏳ (این پیام ${Math.max(1, Math.round((Date.now() - u.at) / 60000))} دقیقه پیش آماده بود ولی اینترنت قطع بود)\n`;
+      try { await tgSend('sendMessage', u.to, { text: late + u.text.replace(/\*\*/g, '') }); }
+      catch (e) { if (NET_ERR.test(e.message)) break; log('unsent dropped', e.message); }
+      state.unsent.shift(); saveState();
+    }
+  } finally { unsentBusy = false; }
+}
+setInterval(() => flushUnsent().catch((e) => log('unsent', e.message)), 60000);
+
 async function reply(text, to = target) {
   if (text.trim() === 'NOTHING_DUE') return log('study: nothing due, stayed quiet');
   if (isTg(to) && TG) {
@@ -779,7 +804,10 @@ async function reply(text, to = target) {
       try { await tgSend('sendMessage', to, { text: tgHtml(part), parse_mode: 'HTML' }); }
       catch (e) {
         log('html send failed, plain:', e.message);
-        try { await tgSend('sendMessage', to, { text: part.replace(/\*\*/g, '') }); } catch (e2) { log(e2.message); }
+        try { await tgSend('sendMessage', to, { text: part.replace(/\*\*/g, '') }); } catch (e2) {
+          log(e2.message);
+          if (NET_ERR.test(e2.message)) queueUnsent(to, part);
+        }
       }
     }
     return;
@@ -850,7 +878,7 @@ function brainMenu(key) {
   return [`🧠 **مغز این تاپیک${name ? ' («' + name + '»)' : ''} را انتخاب کن**`,
     ...BRAIN_CHOICES.map((m, i) => `${i + 1}. \`${m}\`${BRAIN_NOTE[m] ? ' — ' + BRAIN_NOTE[m] : ''}`),
     'فقط شماره یا اسم را بفرست، مثلاً `2` یا `!brain glm-5.3`. اگر ایجنت هم می‌خواهی: `!brain glm-5.3 <agent>`.',
-    'اولین پیامت نگه داشته می‌شود و بعد از انتخاب اجرا می‌شود. بعداً با `!brain` عوضش کن؛ `!new` مغز را نگه می‌دارد.'].join('\n');
+    'اولین پیامت نگه داشته می‌شود و بعد از انتخاب اجرا می‌شود. وسط گفتگو هم با `!brain` عوض می‌شود (همان گفتگو با مدل تازه ادامه پیدا می‌کند). `!new` دوباره مغز را می‌پرسد؛ سشن تازه‌ی خودکارِ هر ۱۰۰ پیام همین مغز را نگه می‌دارد.'].join('\n');
 }
 function parseBrain(arg) {
   const [pick, agent] = (arg || '').trim().split(/\s+/);
@@ -1334,12 +1362,21 @@ function enqueue(post, cmd, arg) {
     switch (cmd) {
       case '/new': {
         const key = sessKey(target), sid = getSid(key);
-        if (!sid) return reply('گفتگوی تازه شروع شد.');
-        await reply('⏳ دارم گفتگوی قبلی این تاپیک را فشرده می‌کنم…');
+        // A manual !new in an owner topic asks for the brain again (owner, 2026-11-12); the automatic 100-message
+        // rotation (maybeRotate) keeps it. The old brain is shown so picking it again is one tap.
+        const askAgain = async () => {
+          if (key === 'main' || !needsBrain(key)) return;
+          const old = sess(key).brain; delete sess(key).brain; saveState();
+          if (old) await reply(`مغز قبلی: ${brainLabel(old)}`);
+          await askBrain(target);
+        };
+        if (!sid) { await reply('گفتگوی تازه شروع شد.'); return askAgain(); }
+        await reply('⏳ دارم گفتگوی قبلی این تاپیک را فشرده می‌کنم (معمولاً ۱ تا ۳ دقیقه)…');
         const sum = await summarizeSession(sid);
         if (!sum && arg !== 'force') return reply('❌ خلاصه نشد؛ گفتگوی قبلی دست‌نخورده ماند. دوباره `!new` بزن، یا `!new force` برای شروع بدون خلاصه.');
         closeSession(key, sid, sum);
-        return reply(sum ? '✅ گفتگوی تازه شروع شد؛ خلاصه‌ی قبلی (کپی‌اش در `brain/topics`) به سشن جدید داده می‌شود.' : 'گفتگوی تازه شروع شد (بدون خلاصه).');
+        await reply(sum ? '✅ گفتگوی تازه شروع شد؛ خلاصه‌ی قبلی (کپی‌اش در `brain/topics`) به سشن جدید داده می‌شود.' : 'گفتگوی تازه شروع شد (بدون خلاصه).');
+        return askAgain();
       }
       case '/delete': {
         const key = sessKey(target);
