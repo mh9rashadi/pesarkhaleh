@@ -11,16 +11,21 @@ import sys
 
 
 def groq(path):
+    # Direct api.groq.com by default; GROQ_URL/GROQ_AUTH route through the Cloudflare Worker relay
+    # (/laptop/groq/transcriptions) when the laptop's region is blocked by Groq.
     key = os.environ.get("GROQ_API_KEY", "").strip()
-    if not key:
+    url = os.environ.get("GROQ_URL", "").strip() or "https://api.groq.com/openai/v1/audio/transcriptions"
+    auth = os.environ.get("GROQ_AUTH", "").strip() or key
+    if not auth:
         return None
     import httpx
 
     with open(path, "rb") as f:
         r = httpx.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": "Bearer " + key},
-            data={"model": "whisper-large-v3-turbo", "language": "fa", "response_format": "json"},
+            url,
+            headers={"Authorization": "Bearer " + auth},
+            # Full v3 (not turbo): meaningfully better on Persian; API speed makes the cost irrelevant.
+            data={"model": os.environ.get("GROQ_MODEL") or "whisper-large-v3", "language": "fa", "response_format": "json"},
             files={"file": (os.path.basename(path), f, "application/octet-stream")},
             timeout=90,
         )

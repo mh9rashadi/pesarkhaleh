@@ -12,6 +12,7 @@ export interface Env {
   TG_BOT_TOKEN: string;
   TG_WEBHOOK_SECRET: string;
   LAPTOP_SECRET: string;
+  GROQ_API_KEY?: string; // Groq whisper for the laptop's voice→text (added 2026-11-12)
   TG_OWNER_ID: string;
   TG_GROUP_ID?: string; // owner's private forum group
 }
@@ -254,6 +255,22 @@ export default {
       return fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/${method}`, {
         method: "POST",
         headers: ct ? { "Content-Type": ct } : {},
+        body: req.body,
+      });
+    }
+
+    // Groq relay for the laptop (2026-11-12): Groq 403s the laptop's region, Cloudflare is fine.
+    //   POST /laptop/groq/transcriptions → https://api.groq.com/openai/v1/audio/transcriptions
+    // Auth to the Worker is the laptop secret; the Groq key stays in the Worker.
+    if (url.pathname === "/laptop/groq/transcriptions") {
+      if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) {
+        return new Response("forbidden", { status: 403 });
+      }
+      if (!env.GROQ_API_KEY) return new Response("groq key not set", { status: 503 });
+      const ct = req.headers.get("Content-Type");
+      return fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, ...(ct ? { "Content-Type": ct } : {}) },
         body: req.body,
       });
     }

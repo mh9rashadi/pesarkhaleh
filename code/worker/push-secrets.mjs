@@ -11,7 +11,7 @@ const env = Object.fromEntries(
     .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])
 );
 
-for (const key of ['TG_BOT_TOKEN', 'TG_WEBHOOK_SECRET', 'LAPTOP_SECRET', 'ANTHROPIC_API_KEY']) {
+for (const key of ['TG_BOT_TOKEN', 'TG_WEBHOOK_SECRET', 'LAPTOP_SECRET', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY']) {
   if (!env[key]) { console.log(`${key}: missing in .env, skipped`); continue; }
   const r = spawnSync('npx', ['wrangler', 'secret', 'put', key], {
     cwd: here, input: env[key], encoding: 'utf8', shell: true,

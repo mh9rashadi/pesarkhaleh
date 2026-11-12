@@ -1,0 +1,5 @@
+exit 0
+{"engine": "whisper", "text": "یکی تو سیم دامن کنید"}
+
+groq failed: Client error '403 Forbidden' for url 'https://api.groq.com/openai/v1/audio/transcriptions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403

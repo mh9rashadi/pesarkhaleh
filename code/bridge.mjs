@@ -586,7 +586,7 @@ async function transcribeVoice(m) {
   return new Promise((resolve) => {
     execFile(PY, [join(here, 'transcribe.py'), f], {
       windowsHide: true, timeout: 240000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GROQ_API_KEY: env.GROQ_API_KEY || '', V2T_MODEL: env.V2T_MODEL || '', V2T_LANG: env.V2T_LANG || '' },
+      env: { ...process.env, GROQ_API_KEY: env.GROQ_API_KEY || '', GROQ_URL: env.GROQ_URL || '', GROQ_AUTH: env.GROQ_AUTH || '', GROQ_MODEL: env.GROQ_MODEL || '', V2T_MODEL: env.V2T_MODEL || '', V2T_LANG: env.V2T_LANG || '' },
     }, (err, out) => {
       if (err) { log('transcribe', (err.killed ? 'timeout' : err.message)); return resolve(null); }
       try { const j = JSON.parse(out.trim().split('\n').pop()); resolve(j.text ? j : null); }
