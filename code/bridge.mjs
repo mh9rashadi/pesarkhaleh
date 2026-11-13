@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { shellTopicName, SHELL_CMDS, SHELL_HELP, runShell } from './shell-cmds.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const env = Object.fromEntries(
@@ -926,45 +927,8 @@ const charterOf = (key) => {
   try { return readFileSync(charterFile(key), 'utf8').trim() || null; } catch { return null; }
 };
 
-// --- Remote-desktop topic (owner, 2026-11-13): a topic whose name says remote/desktop is a DIRECT Windows
-// shell. Messages (typed or transcribed voices) run as PowerShell verbatim; no AI brain in the loop. Only
-// the owner can write there anyway (others are ignored by tgUpdate). Two instantly-destructive commands
-// need a literal "force " prefix; output is capped; 120 s timeout.
-const shellTopicName = (name) => /remote|shell|دسکتاپ|شل|دستور/i.test(name || '');
-const SHELL_HELP = [
-  '🖥️ این تاپیک شلِ مستقیم ویندوز است — هر پیام (متن یا ویس) همین‌طور که هست در PowerShell اجرا می‌شود و جوابش می‌آید.',
-  'مثال‌ها:',
-  '`Get-Process | Sort CPU -Desc | Select -First 5`',
-  '`Get-Date`، `ipconfig`، `Get-Volume`، `Get-Process claude*`',
-  'خاموش/قفل/ری‌استارت: `shutdown /s /t 60` · `rundll32.exe user32.dll,LockWorkStation` · `shutdown /r /t 0`',
-  'فایل‌ها: `Get-ChildItem C:\\Users` · `Get-Content <مسیر> -Tail 20`',
-  'هشدار: خروجی حداکثر ~3000 کاراکتر برمی‌گردد؛ دستورهای طولانی با `Start-Process` جدا اجرا کنید.',
-].join('\n');
-function runShell(cmdText, reply) {
-  return new Promise((resolve) => {
-    const hard = /^\s*(format|diskpart|cipher)\b/i.test(cmdText);
-    if (hard && !/^\s*force\s/i.test(cmdText)) {
-      reply('⛔ این دستور تخریب‌فوری است؛ اگر مطمئنی اولش کلمه‌ی `force` را بگذار: `force ' + cmdText.trim() + '`').then(resolve);
-      return;
-    }
-    const text = (/^\s*force\s/i.test(cmdText) ? cmdText.replace(/^\s*force\s/i, '') : cmdText);
-    const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' + text],
-      { cwd: state.cwd, windowsHide: true });
-    let out = '', err = '', done = false;
-    const t = setTimeout(() => { if (!done) { done = true; try { killTree(p); } catch {} reply('⏱ بیش از ۱۲۰ ثانیه طول کشید؛ کشته شد. برای کار طولانی: `Start-Process` یا `Start-Job`.').then(resolve); } }, 120000);
-    p.stdout.on('data', (d) => (out += d));
-    p.stderr.on('data', (d) => (err += d));
-    p.on('error', (e) => { if (done) return; done = true; clearTimeout(t); reply('خطا در اجرا: ' + e.message).then(resolve); });
-    p.on('close', (code) => {
-      if (done) return;
-      done = true; clearTimeout(t);
-      const clip = (s) => s.length > 3000 ? s.slice(0, 1500) + '\n…[حذف ' + (s.length - 3000) + ' کاراکتر]…\n' + s.slice(-1500) : s;
-      const body = clip((out || '').trim() + (err.trim() ? (out.trim() ? '\n' : '') + '[stderr] ' + clip(err.trim()) : ''));
-      reply('`PS> ' + text.trim().slice(0, 200) + '`\n' + (body || '(بدون خروجی)') + (code ? `\n_exit ${code}_` : '')).then(resolve);
-    });
-  });
-}
+// Remote-desktop topic commands live in shell-cmds.mjs (imported at the top).
+
 // One-shot compaction of a topic's old session: resumes it without tools and asks for a hand-over summary.
 function summarizeSession(sid) {
   return new Promise((resolve) => {
@@ -1266,7 +1230,12 @@ const startedAt = Date.now();
 async function instant(cmd, arg, to, post) {
   const reply = (text) => replyTo(text, to);
   switch (cmd) {
-    case '/help': await reply(HELP); return true;
+    case '/help': {
+      const S0 = sess(sessKey(to));
+      if (S0?.shell) { await reply(SHELL_HELP); return true; } // the remote-desktop topic has its own guide
+      await reply(HELP);
+      return true;
+    }
     case '/stop':
       {
         // !stop = this topic's run; !stop all = every run.
@@ -1540,13 +1509,34 @@ function enqueue(post, cmd, arg) {
       if (!S.awaiting) await askBrain(target); else await reply('اول مغز را انتخاب کن (شماره یا اسم)؛ پیامت نگه داشته شد.');
       return;
     }
-    // Remote-desktop topic: the message IS the command (typed or a transcribed voice) — PowerShell,
-    // verbatim, no brain and no router. Topics named before this feature get the flag on first use.
+    // Remote-desktop topic: the message IS the command (typed or a transcribed voice). Known shortcuts
+    // (SHELL_CMDS) map to practical actions; anything else runs as raw PowerShell. No brain, no router.
+    // Topics named before this feature get the flag on first use.
     if (cmd === undefined && !post.job && !post.inline && S && (S.shell || (shellTopicName(S.name) && (S.shell = true, saveState())))) {
       trStep(post.trace, 'go');
-      log('PS>', post.message.slice(0, 80));
-      await runShell(post.message, reply);
-      trEnd(post.trace, 'shell');
+      const text = post.message.trim();
+      const norm = (w) => w.toLowerCase().replace(/‌/g, '');
+      if (/^(help|!\s*help|\/start|راهنما|کمک)$/i.test(norm(text))) {
+        await reply(SHELL_HELP);
+        trEnd(post.trace, 'shell:help');
+        return;
+      }
+      const [w, ...rest] = text.split(/\s+/);
+      const sc = SHELL_CMDS.find((c) => c.a.some((al) => norm(al) === norm(w)));
+      if (sc) {
+        log('SHELL', w);
+        try {
+          const msg = await sc.run(rest.join(' '), { reply, outbox: outboxOf(key) });
+          if (typeof msg === 'string' && msg.trim()) await reply(msg); // most shortcuts return text
+          trEnd(post.trace, 'shell:' + w);
+        }
+        catch (e) { log('shell cmd error', w, e.message); await reply('خطا در دستور ' + w + ': ' + e.message); trEnd(post.trace, 'shell:err'); }
+      } else {
+        log('PS>', text.slice(0, 80));
+        await runShell(text, reply);
+        trEnd(post.trace, 'shell');
+      }
+      await flushOutbox(target, outboxOf(key));
       return;
     }
     const parts = post.parts || [post];
