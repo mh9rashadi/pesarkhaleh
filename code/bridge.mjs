@@ -231,12 +231,12 @@ async function tgFetch(method, body) {
 async function tgFile(path) {
   if (TG_RELAY) {
     try {
-      const r = await fetch(`${env.WORKER_URL}/laptop/tgfile/${path}`, { headers: relayAuth(), signal: AbortSignal.timeout(30000) });
+      const r = await fetch(`${env.WORKER_URL}/laptop/tgfile/${path}`, { headers: relayAuth(), signal: AbortSignal.timeout(120000) });
       if (r.ok) return r;
       log('tg relay file', r.status);
     } catch (e) { log('tg relay file', e.message); }
   }
-  return fetch(`https://api.telegram.org/file/bot${TG}/${path}`, { signal: AbortSignal.timeout(30000) });
+  return fetch(`https://api.telegram.org/file/bot${TG}/${path}`, { signal: AbortSignal.timeout(120000) });
 }
 async function tgApi(method, body) {
   const j = await tgFetch(method, body);
