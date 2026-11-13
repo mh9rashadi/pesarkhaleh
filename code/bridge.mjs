@@ -124,15 +124,15 @@ Read ${mamad}: deadlines, assignments, quizzes, exams, class announcements. Look
 Keep "${studyFile}" current: one line per item with course, what, due date, and status (open/done; mark done only when the user says so).
 He studies only on Fridays. ${weekday() === 5 ? 'Today is Friday and the morning plan already covers study, so reply with exactly NOTHING_DUE.' : `Reply ONLY if an open item is due before the coming Friday (it cannot wait for his study day): one line per item with course, what, deadline (day + hour + how far away) and a rough time estimate, then suggest which evening to give it an hour. Otherwise reply with exactly NOTHING_DUE.`}
 If the Telegram tools are unavailable, say so in one line.`,
-  vendors: () => `[خودکار: گزارش روزانه‌ی غرفه‌داران]
-Daily report on the Telegram group «توسعه‌دهندگان 🤝 غرفه‌داران» (@salam_ecosystem, chat id -1003782599326) — the Basalam vendors & developers community.
+  vendors: () => `[خودکار: دیده‌بان پردا و فردا در گروه غرفه‌داران]
+Scan the Telegram group «توسعه‌دهندگان 🤝 غرفه‌داران» (@salam_ecosystem, chat id -1003782599326) — the Basalam vendors & developers community — for anything related to the products پردا (Parda) and فردا (Farda). General Basalam topics are NOT reported anymore; only Parda/Farda items, directly or indirectly.
 1. Crawl everything from YESTERDAY (00:00–24:00 local): with the telegram MCP (read-only) call get_history on the group with limit 100; if the oldest fetched message is still newer than yesterday 00:00, keep fetching older pages until you cover the whole day. Note replies and forwarded items too; open get_message_context only where a single line is unclear.
-2. Then write the report yourself from the raw messages. Persian, Telegram style, titled «🛍 گزارش روزانه‌ی غرفه‌داران — <روز هفته> <تاریخ>». Structure:
-- one line volume: تعداد پیام‌ها + نفرات فعال
-- **موضوعات:** 3-8 bullets, each = topic, who raised it, what was said, and the outcome (بی‌جواب ماند / جواب گرفت / حل شد)
-- **⚠️ قابل‌اقدام:** anything that concerns محمدحسین/Basalam — bugs, vendor complaints, feature requests, recurring pains
-- **💬 سؤال‌های بی‌جواب** (if any)
-Clean and factual, no filler; a report is under 20 lines. If yesterday had zero messages, reply with exactly NOTHING_DUE.
+2. What counts as related — Parda is Basalam's social/Instagram checkout: the seller makes a product and gets a short code + purchase link; the buyer comments on Instagram and receives the link in DM; payment via SalamPay, cash or installments; the seller settles from a panel. Farda is its sister product (early stage).
+- DIRECT: any mention of پردا/فردا, SalamPay problems on that flow, payment/checkout links, Instagram DM/comment automation, BoxAPI.
+- INDIRECT (report these — the need matches the product even without naming it): wanting a payment or checkout link to share on social media, selling via Instagram/WhatsApp/Telegram outside the app, customer installments/BNPL, competitor payment-link features (Digikala, ...), ways to reach the customer in DMs.
+- NOT related: general booth/app pains (commission, shipping, panel, search, support) unless they tie into the above. Borderline? Include it, marked «شاید».
+3. Persian, Telegram style, titled «🛍 دیده‌بان پردا و فردا — <روز هفته> <تاریخ>». First one line: how many messages / people were scanned and that only Parda/Farda items follow. Then one block per item: who raised it (name), a SHORT verbatim quote of the key sentence, why it matters for Parda/Farda, and the outcome (جواب گرفت / بی‌جواب ماند). Mark with ⚠️ anything محمدحسین should act on.
+Clean and factual, no filler; usually under 15 lines. If nothing relates to Parda/Farda (or the day had zero messages), reply with exactly NOTHING_DUE.
 If the Telegram tools are unavailable, say so in one line.`,
   evening: (h) => weekday() === 4 ? `[خودکار: بستن هفته‌ی کاری ${today()}]
 Thursday night: close the work week so his mind is free for Friday (his study day).
