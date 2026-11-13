@@ -308,13 +308,13 @@ async function tgReact(m, emoji) {
   try { await tgApi('setMessageReaction', { chat_id: m.chat.id, message_id: m.message_id, reaction: emoji ? [{ type: 'emoji', emoji }] : [] }); } catch {}
 }
 
-async function tgDownload(m) {
+async function tgDownload(m, prefix = 'tg') {
   const items = [m.document, m.photo?.at(-1), m.voice, m.audio, m.video, m.video_note].filter(Boolean);
   const paths = [];
   for (const it of items) {
     try {
       const f = await tgApi('getFile', { file_id: it.file_id });
-      const dir = join(uploadsDir, 'tg-' + m.message_id);
+      const dir = join(uploadsDir, prefix + '-' + m.message_id);
       mkdirSync(dir, { recursive: true });
       const name = basename(it.file_name || f.file_path).replace(/[<>:"|?*]/g, '_');
       const r = await tgFile(f.file_path);
@@ -508,6 +508,20 @@ function handleGuest(m) {
   const text = (m.text || m.caption || '').trim() || (m.voice ? '[ویس فرستاد]' : '[فایل/عکس فرستاد]');
   guestChain = guestChain.then(async () => {
     const who = identify(m.from);
+    // Guest media (photo/file/video) used to be dropped silently — the sandboxed run only saw
+    // "[فایل/عکس فرستاد]". Download it and post it to the مهمان‌ها topic so the owner gets it
+    // directly (owner request, 2026-11-13). Not counted against the daily reply limit.
+    if (m.photo || m.document || m.video || m.video_note) {
+      try {
+        for (const p of await tgDownload(m, 'guest-' + id)) {
+          const form = new FormData();
+          for (const [k, v] of Object.entries(tgDest('guests'))) form.append(k, String(v));
+          form.append('caption', `📁 از ${who.name}${m.from.username ? ' @' + m.from.username : ''} (${id})`);
+          form.append('document', new Blob([readFileSync(p)]), basename(p));
+          await tgApi('sendDocument', form);
+        }
+      } catch (e) { log('guest media', e.message); }
+    }
     const limit = who.known ? GUEST_DAILY.known : GUEST_DAILY.stranger;
     if (++g.count > limit) {
       if (g.count === limit + 1) await tgApi('sendMessage', { chat_id: m.chat.id, text: 'امروز دیگه بیشتر از این نمی‌تونم جواب بدم؛ پیامت رو به محمدحسین می‌رسونم 🙏' }).catch(() => {});
