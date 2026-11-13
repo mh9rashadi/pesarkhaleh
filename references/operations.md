@@ -18,7 +18,7 @@
 | `!save [msg]` | run the skill's `sync.mjs` (copy code into this skill repo and push) |
 | `!restart` | planned restart (exit 75) |
 | `!brief` `!digest` `!study` `!evening` | run a scheduled job now |
-| (scheduled) `vendors` 09:00 | daily 09:00 report on the Telegram group «توسعه‌دهندگان 🤝 غرفه‌داران» (@salam_ecosystem): crawl ALL of yesterday's messages via telegram MCP (get_history pages of 100), then the session itself writes a clean Persian report (volume, topics, actionable, unanswered) to the 💼 کار topic; NOTHING_DUE if the day was empty |
+| (scheduled) `vendors` 09:00 | daily 09:00 scan of the Telegram group «توسعه‌دهندگان 🤝 غرفه‌داران» (@salam_ecosystem): crawl ALL of yesterday via telegram MCP (get_history pages of 100), but report ONLY items directly/indirectly related to the products **پردا and فردا** (payment/checkout links for social media, selling outside the app, installments/SalamPay, DM automation, competitor payment-link features; marginal ones marked «شاید») — per user request 2026-11-13 general Basalam topics are no longer referred to him. Persian report «🛍 دیده‌بان پردا و فردا» to the 📋 گزارش‌ها topic; NOTHING_DUE when nothing relates |
 | `!todo` | open commitments |
 | `!guests [on\|off]` | who messaged the bot; turn guest replies on/off (instant) |
 | `!send <text>` | reply to a 📨 notice: the bot sends the text to that guest (instant) |
