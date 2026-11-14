@@ -1478,7 +1478,12 @@ function enqueue(post, cmd, arg) {
         const key = sessKey(target);
         if (key === 'main') return reply('این‌جا سشن اصلی است؛ مغزش را با `!model` و `!router` تنظیم می‌کنی. `!brain` برای تاپیک‌هاست.');
         const S = sess(key), b = parseBrain(arg);
-        if (!b) return reply((S.brain ? `مغز فعلی: ${brainLabel(S.brain)}\n` : '') + brainMenu(key));
+        // Showing the menu must arm the number-reply as a command (owner bug report 2026-11-14: the
+        // number went to the AI as a prompt instead of being read as the brain choice).
+        if (!b) {
+          if (!S.awaiting) { S.awaiting = true; saveState(); }
+          return reply((S.brain ? `مغز فعلی: ${brainLabel(S.brain)}\n` : '') + brainMenu(key));
+        }
         S.brain = b; delete S.awaiting; saveState();
         await reply(`🧠 مغز این تاپیک: ${brainLabel(b)}`);
         const waiting = pendingPosts.get(key) || []; pendingPosts.delete(key);
@@ -1523,6 +1528,9 @@ function enqueue(post, cmd, arg) {
       if (!S.awaiting) await askBrain(target); else await reply('اول مغز را انتخاب کن (شماره یا اسم)؛ پیامت نگه داشته شد.');
       return;
     }
+    // A normal message after a `!brain` menu means the menu was abandoned: disarm it so a stray number
+    // later can't silently switch the topic's brain (2026-11-14).
+    if (cmd === undefined && !post.job && S?.awaiting && S.brain) { delete S.awaiting; saveState(); }
     // Remote-desktop topic: the message IS the command (typed or a transcribed voice). Known shortcuts
     // (SHELL_CMDS) map to practical actions; anything else runs as raw PowerShell. No brain, no router.
     // Topics named before this feature get the flag on first use.
