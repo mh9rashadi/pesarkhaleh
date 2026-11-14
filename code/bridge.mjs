@@ -631,7 +631,7 @@ async function transcribeVoice(m, tr) {
   return new Promise((resolve) => {
     execFile(PY, [join(here, 'transcribe.py'), f], {
       windowsHide: true, timeout: 110000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_VIA_WORKER: env.V2T_VIA_WORKER || '', V2T_WORKER_URL: env.WORKER_URL || '', V2T_FILE_ID: (m.voice || m.video_note || m.audio)?.file_id || '' },
+      env: { ...process.env, GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_VIA_WORKER: env.V2T_VIA_WORKER || '', V2T_WORKER_URL: env.WORKER_URL || '', V2T_FILE_ID: (m.voice || m.video_note || m.audio)?.file_id || '', SONIEX_URL: env.SONIEX_URL || '', SONIEX_KEY: env.SONIEX_KEY || '', SONIEX_MODEL: env.SONIEX_MODEL || '' },
     }, (err, out) => {
       if (err) {
         log('transcribe', (err.killed ? 'timeout' : err.message));
