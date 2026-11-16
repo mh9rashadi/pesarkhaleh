@@ -23,7 +23,6 @@ const { MM_URL, MM_TOKEN, CHANNEL_ID, WEBHOOK_URL } = env;
 const TG = env.TG_BOT_TOKEN; // Telegram bot: the brain's only way to write on Telegram
 const TG_OWNER = Number(env.TG_OWNER_ID || 0);
 const TG_GROUP = Number(env.TG_GROUP_ID || 0); // owner's private forum group: one topic per kind of output
-const TRANSCRIBER = env.TG_TRANSCRIBER || 'KhanoomJBot'; // «خانوم جلسه‌ای»: turns the owner's voices in the group into text
 const CLAUDE = env.CLAUDE_BIN || 'claude';
 const RESTART_CODE = 75;
 if (!MM_URL || !MM_TOKEN || !CHANNEL_ID || !WEBHOOK_URL) {
@@ -606,14 +605,59 @@ function tgGroupMessage(m) {
   ownerMessage(m, 'tg:#' + (m.is_topic_message ? m.message_thread_id : 0));
 }
 
-// (Historical: voices used to be transcribed by خانوم جلسه‌ای in the group — removed 2026-11-13.)
-
-// Bridge-side voice→text (2026-11-12). Downloads the voice (tgDownload) and runs transcribe.py: Gemini
-// through the Cloudflare Worker relay, ONLY (2026-11-13, user: «مدل لوکال قطع؛ یا سریع تبدیل کن یا
-// بگو تایپ کنم»). Groq + local whisper (and the warm transcribe-server.py) are gone: fast transcript or
-// a fast clean "please type it" reply. Resolves {engine, text} or null.
-const PY = existsSync(join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe'))
-  ? join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe') : 'python';
+// Voice→text: Soniox ONLY (owner, 2026-11-16: «هر سرویسی که برای ویس به متن استفاده می‌کردیم حذف کن،
+// سونیکس رو تنظیم کن»). The owner's own paid Soniox account, called directly at api.soniox.com from here
+// (no Python, no Worker relay). Gemini, the Soniex gateway, Groq, local whisper and خانوم جلسه‌ای are all
+// gone from this bridge. Fast transcript or a fast clean "please type it" reply. Resolves {engine, text} or null.
+// Key: SONIOX_API_KEY in .env (else ~/.tokenhub/secrets.env). Model: SONIOX_MODEL (default stt-async-v6).
+const SONIOX_API = 'https://api.soniox.com';
+function sonioxKey() {
+  if (env.SONIOX_API_KEY) return env.SONIOX_API_KEY;
+  try {
+    return readFileSync(join(process.env.USERPROFILE || '', '.tokenhub', 'secrets.env'), 'utf8')
+      .match(/^\s*SONIOX_API_KEY\s*=\s*["']?([^"'\r\n]+)/m)?.[1]?.trim() || '';
+  } catch { return ''; }
+}
+async function sonioxTranscribe(file, attempts) {
+  const key = sonioxKey();
+  if (!key) throw new Error('no SONIOX_API_KEY');
+  const H = { Authorization: 'Bearer ' + key };
+  const call = async (path, opts = {}, ms = 30000) => {
+    const r = await fetch(SONIOX_API + path, { ...opts, headers: { ...H, ...(opts.headers || {}) }, signal: AbortSignal.timeout(ms) });
+    const t = await r.text();
+    if (!r.ok) throw new Error(`soniox ${r.status}: ${t.slice(0, 160)}`);
+    return t ? JSON.parse(t) : {};
+  };
+  const t0 = Date.now();
+  let fid = null, tid = null;
+  try {
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(file)]), basename(file).replace(/\.oga$/i, '.ogg'));
+    fid = (await call('/v1/files', { method: 'POST', body: fd }, 60000)).id;
+    tid = (await call('/v1/transcriptions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: env.SONIOX_MODEL || 'stt-async-v6', file_id: fid, language_hints: ['fa', 'en'], client_reference_id: 'pesarkhaleh' }),
+    })).id;
+    const deadline = Date.now() + 95000; // fits the 2-min voice budget
+    for (;;) {
+      const s = await call('/v1/transcriptions/' + tid);
+      if (s.status === 'completed') break;
+      if (s.status === 'error') throw new Error('soniox: ' + (s.error_message || 'error'));
+      if (Date.now() > deadline) throw new Error('soniox: not ready in time');
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    const res = await call(`/v1/transcriptions/${tid}/transcript`);
+    const text = (res.text || (res.tokens || []).map((x) => x.text).join('')).trim();
+    attempts.push({ e: 'soniox', ms: Date.now() - t0, ok: !!text });
+    return text || null;
+  } catch (e) {
+    attempts.push({ e: 'soniox', ms: Date.now() - t0, err: e.message.slice(0, 80) });
+    throw e;
+  } finally {
+    if (tid) call('/v1/transcriptions/' + tid, { method: 'DELETE' }).catch(() => {});
+    if (fid) call('/v1/files/' + fid, { method: 'DELETE' }).catch(() => {});
+  }
+}
 async function transcribeVoice(m, tr) {
   // Direct api.telegram.org fetches flap with the network; updates/sends survive via the worker, so retry.
   // Bounded: stop retrying the download after ~2 min total, whatever the inner fetches did.
@@ -628,32 +672,17 @@ async function transcribeVoice(m, tr) {
   }
   if (!f) { log('voice download: no audio file'); return null; }
   const tStt = Date.now();
-  return new Promise((resolve) => {
-    execFile(PY, [join(here, 'transcribe.py'), f], {
-      windowsHide: true, timeout: 110000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GEMINI_API_KEY: env.GEMINI_API_KEY || '', GEMINI_URL: env.GEMINI_URL || '', GEMINI_AUTH: env.GEMINI_AUTH || '', GEMINI_MODEL: env.GEMINI_MODEL || '', V2T_VIA_WORKER: env.V2T_VIA_WORKER || '', V2T_WORKER_URL: env.WORKER_URL || '', V2T_FILE_ID: (m.voice || m.video_note || m.audio)?.file_id || '', SONIEX_URL: env.SONIEX_URL || '', SONIEX_KEY: env.SONIEX_KEY || '', SONIEX_MODEL: env.SONIEX_MODEL || '' },
-    }, (err, out) => {
-      if (err) {
-        log('transcribe', (err.killed ? 'timeout' : err.message));
-        trStep(tr, 'stt', 'FAIL ' + ((Date.now() - tStt) / 1000).toFixed(0) + 's');
-        return resolve(null);
-      }
-      try {
-        const j = JSON.parse(out.trim().split('\n').pop());
-        trStep(tr, 'stt', j.attempts ? j.attempts.map((a) => `${a.e}${a.ok ? '✓' : '✗'}${(a.ms / 1000).toFixed(0)}s`).join(' ') : j.engine);
-        resolve(j.text ? j : null);
-      }
-      catch { log('transcribe parse', String(out).slice(0, 200)); trStep(tr, 'stt', 'PARSE-FAIL'); resolve(null); }
-    });
-  });
+  const attempts = [];
+  let text = null, why = '';
+  try { text = await sonioxTranscribe(f, attempts); } catch (e) { why = e.message; log('transcribe', e.message); }
+  trStep(tr, 'stt', attempts.length ? attempts.map((a) => `${a.e}${a.ok ? '✓' : '✗'}${(a.ms / 1000).toFixed(0)}s`).join(' ') : 'FAIL ' + ((Date.now() - tStt) / 1000).toFixed(0) + 's');
+  return text ? { engine: 'soniox', text } : { engine: 'soniox', text: null, why };
 }
 
 function ownerMessage(m, src) {
-  // The summon mention (sent from the owner's account by summon_transcriber.py, or typed by him) is not a request.
-  if (TG_GROUP && m.chat.id === TG_GROUP && (m.text || '').trim().toLowerCase() === '@' + TRANSCRIBER.toLowerCase()) return;
-  // Voice/video-note/audio → text right here in the bridge (2026-11-12), group or DM: the transcript IS
-  // the message, so batching, per-topic sessions and !new compaction all see plain text. Gemini-only
-  // (2026-11-13): on failure reply directly — no خانوم round-trip, no brain run, no waiting.
+  // Voice/video-note/audio → text right here in the bridge, group or DM: the transcript IS the message,
+  // so batching, per-topic sessions and !new compaction all see plain text. Soniox only (2026-11-16):
+  // on failure reply directly — no brain run, no waiting.
   if ((m.voice || m.video_note || m.audio) && !m.caption) {
     tgReact(m, '👀');
     const tr = newTrace('voice', src);
@@ -669,7 +698,9 @@ function ownerMessage(m, src) {
         chat_id: m.chat.id,
         ...(m.is_topic_message && { message_thread_id: m.message_thread_id }),
         reply_parameters: { message_id: m.message_id },
-        text: 'ویس الان تبدیل نشد (جمنای جواب نداد)؛ فعلاً متنش رو برام تایپ کن 🙏',
+        text: /balance|402/i.test(t?.why || '')
+          ? 'ویس تبدیل نشد: اعتبار سونیکس تموم شده (console.soniox.com → Billing). فعلاً متنش رو تایپ کن 🙏'
+          : 'ویس الان تبدیل نشد (سونیکس جواب نداد)؛ فعلاً متنش رو برام تایپ کن 🙏',
       }).catch((e) => log('stt-fail notice', e.message));
     });
     return;

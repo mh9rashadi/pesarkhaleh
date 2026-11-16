@@ -90,30 +90,18 @@
 - One brain for all topics; the prompt carries `[via Telegram, group topic «…»]` and the reply goes to the same topic.
 - Security: in the group only the owner's messages are processed; anyone else posting or being added is ignored
   and reported in ⚙️. Owner must not post as Anonymous admin (sender would be the group).
-- **Voice in the group** (2026-10-31): the transcriber bot «خانوم جلسه‌ای» `@KhanoomJBot` (`TG_TRANSCRIBER`, default
-  KhanoomJBot) is a member of the group and posts the text of the owner's voices. Bots never receive other bots'
-  messages, so the old path turned an uncaptioned group voice into `voicePrompt()` after 20s. **Since 2026-11-12
-  the bridge transcribes voices itself** (`transcribeVoice(m)` + `transcribe.py`, any topic AND the bot DM):
-  the voice is downloaded (`tgDownload`) and the transcript becomes the message itself — `[Voice message,
-  auto-transcribed (<engine>); this is محمدحسین speaking…]` + text — so batching, per-topic sessions, !new
-  compaction and the router all see plain text. Engines in `transcribe.py`: Groq `whisper-large-v3-turbo` when
-  `GROQ_API_KEY` is set in .env (fastest, best), else LOCAL `faster-whisper large-v3-turbo` int8 on CPU (free,
-  offline; model cached in ~/.cache/huggingface; "small" is the always-cached fallback in the ladder). Language
-  pinned to fa (`V2T_LANG`), model overridable (`V2T_MODEL`). Python: SYSTEM python 3.14 (has faster_whisper +
-  httpx; the telegram-mcp venv does not). Gotchas fixed 2026-11-12: PyAV 19 dropped `metadata_errors` (transcribe.py
-  monkeypatches av.open), huggingface_hub had to stay <1.0. خانوم جلسه‌ای is now only the FALLBACK for the group
-  (summon + voicePrompt, 20s); group AUDIO files (music) still use it; in the DM a failed transcription just asks
-  him to retype. Voice logs as `voice → <engine> <text…>`.
-- **Gemini-only (2026-11-13, owner: «مدل لوکال قطع؛ یا سریع تبدیل کن یا بگو تایپ کنم»)**: transcribe.py tries
-  gemini-flash-latest then gemini-flash-lite-latest (503 under load), ONE 25 s attempt each via the Worker relay
-  `/laptop/gemini/<path>` (the laptop's network is country-blocked by Google; auth = Bearer LAPTOP_SECRET to the
-  Worker, X-goog-api-key replaced with the stored GEMINI_API_KEY). Removed 2026-11-13: Groq engine (org-level
-  region ban — two keys, always 403), local faster-whisper (~26 s per short voice on this CPU and weaker
-  Persian), the warm transcribe-server.py, and the old خانوم جلسه‌ای voicePrompt round-trip. On failure the
-  bridge replies directly in the same topic («ویس الان تبدیل نشد… تایپ کن») — no brain run, no queue.
-  execFile timeout 75 s; env passthrough GEMINI_* only; keys in .env + Worker secretsWorker secrets (push-secrets.mjs). Env passthrough for the python spawn is explicit in bridge.mjs.
-  (no file download): the brain reads @KhanoomJBot's next message via the read-only MCP (retries up to ~90s) and
-  treats it as the owner's message. If no text arrives it says so in one line.
+- **Voice → text (Soniox only, since 2026-11-16, owner: «هر سرویسی که برای ویس به متن استفاده می‌کردیم حذف کن،
+  سونیکس رو تنظیم کن»)**: in any topic and in the bot DM, `ownerMessage()` sends an uncaptioned voice / video note /
+  audio to `transcribeVoice(m)`. That function downloads it (`tgDownload`, 3 tries), then `sonioxTranscribe()` in bridge.mjs
+  (in-process fetch, no Python) uploads it to `https://api.soniox.com/v1/files`, creates a `stt-async-v6` job with hints fa+en,
+  polls every 1.5 s (95 s cap), reads the transcript and deletes the file and the job. The transcript becomes the message:
+  `[Voice message, auto-transcribed (soniox); this is محمدحسین speaking…]` + text. On failure the bridge replies directly in
+  the same topic. If the balance is empty it says so («اعتبار سونیکس تموم شده»), otherwise «سونیکس جواب نداد… تایپ کن».
+  No brain run happens. Key: `SONIOX_API_KEY` in .env (fallback `~/.tokenhub/secrets.env`), model `SONIOX_MODEL`. This is the owner's own paid
+  account (skill `soniox`). REMOVED on 2026-11-16: transcribe.py (Gemini + Worker `/laptop/v2t` + `/laptop/gemini` relay, the
+  third-party "Soniex" gateway 212.80.22.165), summon_transcriber.py, the Worker Groq relay, the GEMINI_/GROQ_/SONIEX_/V2T_ env
+  vars and Worker secrets, the local faster-whisper models in ~/.cache/huggingface, and the overnight v2t probe. Backups are in
+  `gap-claude-bridge/.backup-soniox-20261116/`. Earlier engine history (Groq, then local whisper, then Gemini) is in history.md.
 - `!send <text>` as a reply to a 📨 notice: the bot sends the text to that guest (id parsed from the notice).
 - The bot DM still works (and inline needs it); first DM after the switch says the group is the main place.
 - Worker: owner messages in the group are also queued with a "laptop is off" notice in that topic.
@@ -243,10 +231,8 @@ In `claude -p` runs it loads a few seconds after start (tools appear via ToolSea
   not be used inside the Worker).
 
 
-### The one owner-account write (2026-10-31, owner's explicit permission)
-- Bots never receive other bots' messages, so the bot cannot summon @KhanoomJBot. When the owner sends a voice in his group, `ownerMessage()` runs `summon_transcriber.py <message_id>` with the telegram-mcp venv python. It uses the MCP's session (TELEGRAM_SESSION_STRING from tools/telegram-mcp/.env) to reply exactly `@KhanoomJBot` to that voice, from the owner's account.
-- Hard limits in the script: group id hard-coded (-1004487332493), text hard-coded, refuses unless the target is a voice/audio/video-note sent by the owner himself. Nothing else may ever write as the owner; the MCP stays read-only.
-- KhanoomJBot should NOT be admin in the group (as admin it answers every text message).
+### Owner-account write for voices: REMOVED (2026-11-16)
+- summon_transcriber.py (it replied `@KhanoomJBot` from the owner's account) is gone, because the bridge transcribes with Soniox itself.
 
 ## Backends: Claude subscription vs HooshCode/GLM (2026-10-31)
 - To save the user's Claude subscription, runs can go to **HooshCode** (company-provided, https://code.flearning.ir):
