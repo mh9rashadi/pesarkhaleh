@@ -618,6 +618,24 @@ function sonioxKey() {
       .match(/^\s*SONIOX_API_KEY\s*=\s*["']?([^"'\r\n]+)/m)?.[1]?.trim() || '';
   } catch { return ''; }
 }
+// Start the Soniox job IN the Worker (2026-11-16): this network kills Telegram file downloads; the Worker
+// fetches the audio from Telegram and uploads it to Soniox. One-shot HTTPS (no pooling — see workerPollHttp).
+function workerSttStart(fileId) {
+  const body = JSON.stringify({ file_id: fileId, bot: 'main', model: env.SONIOX_MODEL || 'stt-async-v6' });
+  return new Promise((resolve, reject) => {
+    const req = https.request(env.WORKER_URL + '/stt/start', {
+      method: 'POST', agent: false,
+      headers: { Authorization: 'Bearer ' + env.LAPTOP_SECRET, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Connection: 'close' },
+    }, (res) => {
+      let d = '';
+      res.on('data', (c) => { d += c; });
+      res.on('end', () => { try { const j = JSON.parse(d); j.ok ? resolve(j) : reject(Object.assign(new Error(j.err || 'worker stt'), { fid: j.file_id })); } catch (e) { reject(e); } });
+    });
+    req.setTimeout(90000, () => req.destroy(new Error('worker stt timeout')));
+    req.on('error', reject);
+    req.end(body);
+  });
+}
 async function sonioxTranscribe(file, attempts) {
   const key = sonioxKey();
   if (!key) throw new Error('no SONIOX_API_KEY');
@@ -631,13 +649,18 @@ async function sonioxTranscribe(file, attempts) {
   const t0 = Date.now();
   let fid = null, tid = null;
   try {
-    const fd = new FormData();
-    fd.append('file', new Blob([readFileSync(file)]), basename(file).replace(/\.oga$/i, '.ogg'));
-    fid = (await call('/v1/files', { method: 'POST', body: fd }, 60000)).id;
-    tid = (await call('/v1/transcriptions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: env.SONIOX_MODEL || 'stt-async-v6', file_id: fid, language_hints: ['fa', 'en'], client_reference_id: 'pesarkhaleh' }),
-    })).id;
+    if (file.tgFileId) {
+      try { const j = await workerSttStart(file.tgFileId); fid = j.file_id; tid = j.transcription_id; }
+      catch (e) { if (e.fid) fid = e.fid; throw e; }
+    } else {
+      const fd = new FormData();
+      fd.append('file', new Blob([readFileSync(file)]), basename(file).replace(/\.oga$/i, '.ogg'));
+      fid = (await call('/v1/files', { method: 'POST', body: fd }, 60000)).id;
+      tid = (await call('/v1/transcriptions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: env.SONIOX_MODEL || 'stt-async-v6', file_id: fid, language_hints: ['fa', 'en'], client_reference_id: 'pesarkhaleh' }),
+      })).id;
+    }
     const deadline = Date.now() + 95000; // fits the 2-min voice budget
     for (;;) {
       const s = await call('/v1/transcriptions/' + tid);
@@ -659,6 +682,15 @@ async function sonioxTranscribe(file, attempts) {
   }
 }
 async function transcribeVoice(m, tr) {
+  // Preferred (2026-11-16): the Worker downloads from Telegram and starts Soniox; no local download at all.
+  const fileId = (m.voice || m.video_note || m.audio)?.file_id;
+  if (fileId && env.WORKER_URL && env.LAPTOP_SECRET) {
+    const tStt = Date.now(), attempts = [];
+    let text = null, why = '';
+    try { text = await sonioxTranscribe({ tgFileId: fileId }, attempts); } catch (e) { why = e.message; log('transcribe', e.message); }
+    trStep(tr, 'stt', attempts.map((a) => `${a.e}${a.ok ? '✓' : '✗'}${(a.ms / 1000).toFixed(0)}s`).join(' ') || 'FAIL ' + ((Date.now() - tStt) / 1000).toFixed(0) + 's');
+    if (text || /balance|402/i.test(why)) return text ? { engine: 'soniox', text } : { engine: 'soniox', text: null, why };
+  }
   // Direct api.telegram.org fetches flap with the network; updates/sends survive via the worker, so retry.
   // Bounded: stop retrying the download after ~2 min total, whatever the inner fetches did.
   let f = null;

@@ -12,6 +12,7 @@ export interface Env {
   TG_BOT_TOKEN: string;
   TG_WEBHOOK_SECRET: string;
   LAPTOP_SECRET: string;
+  SONIOX_API_KEY?: string; // owner's own Soniox (2026-11-16): voice→text started from the Worker
   DIBI_BOT_TOKEN?: string; // دیبی voice→text bot (2026-11-16), relayed like the main bot
   TG_OWNER_ID: string;
   TG_GROUP_ID?: string; // owner's private forum group
@@ -278,6 +279,46 @@ export default {
         headers: ct ? { "Content-Type": ct } : {},
         body: req.body,
       });
+    }
+
+    // Voice→text start IN the Worker (2026-11-16): this laptop's network kills Telegram file downloads,
+    // Cloudflare does not. The laptop sends only a file_id; the Worker fetches the audio from Telegram,
+    // uploads it to Soniox and creates the job, then returns the ids. The laptop polls Soniox itself
+    // (small requests pass) and deletes the job + file afterwards.
+    //   POST /stt/start {"file_id","bot":"dibi"|"main","speakers"?:bool,"model"?:string}
+    //   → {"ok":true,"transcription_id","file_id"}   auth: Bearer LAPTOP_SECRET
+    if (url.pathname === "/stt/start" && req.method === "POST") {
+      if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) {
+        return new Response("forbidden", { status: 403 });
+      }
+      if (!env.SONIOX_API_KEY) return Response.json({ ok: false, err: "soniox key not set" }, { status: 503 });
+      const b = (await req.json().catch(() => ({}))) as { file_id?: string; bot?: string; speakers?: boolean; model?: string };
+      const token = b.bot === "dibi" ? env.DIBI_BOT_TOKEN : env.TG_BOT_TOKEN;
+      if (!b.file_id || !token) return Response.json({ ok: false, err: "bad request" }, { status: 400 });
+      try {
+        const gf = (await (await fetch(`https://api.telegram.org/bot${token}/getFile`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file_id: b.file_id }),
+        })).json()) as { ok: boolean; result?: { file_path: string }; description?: string };
+        if (!gf.ok || !gf.result) return Response.json({ ok: false, err: "getFile: " + (gf.description || "?") });
+        const audio = await fetch(`https://api.telegram.org/file/bot${token}/${gf.result.file_path}`);
+        if (!audio.ok) return Response.json({ ok: false, err: "download " + audio.status });
+        const name = (gf.result.file_path.split("/").pop() || "audio.ogg").replace(/.oga$/i, ".ogg");
+        const fd = new FormData();
+        fd.append("file", new Blob([await audio.arrayBuffer()]), name);
+        const H = { Authorization: `Bearer ${env.SONIOX_API_KEY}` };
+        const up = await fetch("https://api.soniox.com/v1/files", { method: "POST", headers: H, body: fd });
+        if (!up.ok) return Response.json({ ok: false, err: "soniox upload " + up.status + ": " + (await up.text()).slice(0, 200) });
+        const fid = ((await up.json()) as { id: string }).id;
+        const cfg: Record<string, unknown> = { model: b.model || "stt-async-v6", file_id: fid, language_hints: ["fa", "en"], client_reference_id: b.bot || "main" };
+        if (b.speakers) cfg.enable_speaker_diarization = true;
+        const tr = await fetch("https://api.soniox.com/v1/transcriptions", {
+          method: "POST", headers: { ...H, "Content-Type": "application/json" }, body: JSON.stringify(cfg),
+        });
+        if (!tr.ok) return Response.json({ ok: false, err: "soniox create " + tr.status + ": " + (await tr.text()).slice(0, 200), file_id: fid });
+        return Response.json({ ok: true, transcription_id: ((await tr.json()) as { id: string }).id, file_id: fid });
+      } catch (e) {
+        return Response.json({ ok: false, err: String(e).slice(0, 200) });
+      }
     }
 
     return new Response("پسرخاله اینجاست 👋");
