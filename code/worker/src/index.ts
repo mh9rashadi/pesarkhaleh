@@ -12,6 +12,7 @@ export interface Env {
   TG_BOT_TOKEN: string;
   TG_WEBHOOK_SECRET: string;
   LAPTOP_SECRET: string;
+  DIBI_BOT_TOKEN?: string; // دیبی voice→text bot (2026-11-16), relayed like the main bot
   TG_OWNER_ID: string;
   TG_GROUP_ID?: string; // owner's private forum group
 }
@@ -258,6 +259,26 @@ export default {
       });
     }
 
+    // دیبی relay (2026-11-16): same as /laptop/tg but with the Dibi bot token.
+    //   POST /dibi/tg/<method> · GET /dibi/tgfile/<path>   (auth: Bearer LAPTOP_SECRET)
+    if (url.pathname.startsWith("/dibi/tg/") || url.pathname.startsWith("/dibi/tgfile/")) {
+      if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) {
+        return new Response("forbidden", { status: 403 });
+      }
+      if (!env.DIBI_BOT_TOKEN) return new Response("dibi token not set", { status: 503 });
+      if (url.pathname.startsWith("/dibi/tgfile/")) {
+        const path = url.pathname.slice("/dibi/tgfile/".length);
+        return fetch(`https://api.telegram.org/file/bot${env.DIBI_BOT_TOKEN}/${path}`);
+      }
+      const method = url.pathname.slice("/dibi/tg/".length);
+      if (!/^[A-Za-z]+$/.test(method)) return new Response("bad method", { status: 400 });
+      const ct = req.headers.get("Content-Type");
+      return fetch(`https://api.telegram.org/bot${env.DIBI_BOT_TOKEN}/${method}`, {
+        method: "POST",
+        headers: ct ? { "Content-Type": ct } : {},
+        body: req.body,
+      });
+    }
 
     return new Response("پسرخاله اینجاست 👋");
   },
