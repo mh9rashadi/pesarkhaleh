@@ -51,7 +51,7 @@ pushes this skill repo (private: github.com/mh9rashadi/pesarkhaleh) — the code
    User-approved exceptions, both toward the transcription bot @KhanoomJBot (id 7758315663):
    `summon_transcriber.py` (2026-10-31, bot DM) and `call-recorder\khanoom_sender.py` (2026-11-04,
    sends Zoiper call recordings as voice notes to the group «Parda Call», id -1003932363325, members:
-   the user + the bot). No other writing as the user.
+   the user + the bot). Second exception (2026-11-16, owner explicitly asked: «با دیبی تبدیلش کنه و از طرف خودم ارسال کنه»): `~/dibi-bot/post_as_owner.py` posts the transcript of the owner's OWN voice as his reply to that voice, ONLY in the پسرخاله group (-1004487332493 hard-coded). No other writing as the user.
 2. **Gap is read-only** apart from the bridge channel (replies via incoming webhook, status reactions
    and file posts there). Never post, edit or react elsewhere on Gap. One user-approved exception
    (2026-11-04): `call-recorder\call_sync.py` posts short Parda seller-call reports in the user's DM

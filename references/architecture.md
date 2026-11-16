@@ -102,6 +102,7 @@
   third-party "Soniex" gateway 212.80.22.165), summon_transcriber.py, the Worker Groq relay, the GEMINI_/GROQ_/SONIEX_/V2T_ env
   vars and Worker secrets, the local faster-whisper models in ~/.cache/huggingface, and the overnight v2t probe. Backups are in
   `~/backups/pesarkhaleh-soniox-20261116/` (local only). Earlier engine history (Groq, then local whisper, then Gemini) is in history.md.
+- **Group voices through «دیبی» (2026-11-16)**: the Dibi bot (`~/dibi-bot/dibi.mjs`, privacy off in the group) transcribes the owner's voice with Soniox. Then `post_as_owner.py` (Telethon, MCP session) posts the text FROM THE OWNER'S ACCOUNT as a reply to the voice, so the bridge receives it as his typed message and labels it `[Voice message, transcribed by دیبی…]`. The bridge reacts 👀 and waits `DIBI_WAIT_MS` (150 s). If no text reply to that voice arrives, it transcribes the voice itself (`voiceFallback`). A bare `@xxxbot` summon text is ignored. Switch: `DIBI_IN_GROUP=0` in .env turns Dibi mode off (the bridge transcribes everything itself). DM voices are always transcribed by the bridge.
 - `!send <text>` as a reply to a 📨 notice: the bot sends the text to that guest (id parsed from the notice).
 - The bot DM still works (and inline needs it); first DM after the switch says the group is the main place.
 - Worker: owner messages in the group are also queued with a "laptop is off" notice in that topic.

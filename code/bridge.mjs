@@ -679,11 +679,40 @@ async function transcribeVoice(m, tr) {
   return text ? { engine: 'soniox', text } : { engine: 'soniox', text: null, why };
 }
 
+// Group voices go through «دیبی» (2026-11-16, owner): the Dibi bot (~/dibi-bot) transcribes the owner's voice
+// with Soniox and posts the text FROM THE OWNER'S ACCOUNT as a reply to the voice, so it arrives here as his
+// normal typed message. The bridge only waits; if no reply to that voice arrives within DIBI_WAIT_MS (Dibi
+// down, not in the group…), it falls back to transcribing the voice itself. DM voices: transcribed here.
+const DIBI_WAIT_MS = Number(env.DIBI_WAIT_MS || 150000);
+const dibiPending = new Map(); // voice message_id → fallback timer
 function ownerMessage(m, src) {
-  // Voice/video-note/audio → text right here in the bridge, group or DM: the transcript IS the message,
-  // so batching, per-topic sessions and !new compaction all see plain text. Soniox only (2026-11-16):
-  // on failure reply directly — no brain run, no waiting.
-  if ((m.voice || m.video_note || m.audio) && !m.caption) {
+  if (TG_GROUP && m.chat.id === TG_GROUP) {
+    if (/^@\w+bot$/i.test((m.text || '').trim())) return; // a bot summon ("@DibiNevisBot" on a voice) is not a request
+    const rid = m.reply_to_message?.message_id;
+    if (rid && dibiPending.has(rid) && (m.text || '').trim()) { clearTimeout(dibiPending.get(rid)); dibiPending.delete(rid); }
+    if ((m.voice || m.video_note || m.audio) && !m.caption && env.DIBI_IN_GROUP !== '0') {
+      tgReact(m, '👀');
+      dibiPending.set(m.message_id, setTimeout(() => {
+        dibiPending.delete(m.message_id);
+        log('dibi: no transcript for voice', m.message_id, '→ bridge transcribes it');
+        voiceFallback(m, src);
+      }, DIBI_WAIT_MS));
+      return;
+    }
+    // Dibi's transcript arrives as the owner's reply to his own voice: the quote is a voice, don't add a note.
+    if (rid && (m.reply_to_message.voice || m.reply_to_message.audio || m.reply_to_message.video_note) && (m.text || '').trim()) {
+      return handle({ src, tg: m, message: `[Voice message, transcribed by دیبی (soniox); this is محمدحسین speaking — treat it exactly like his typed message]\n${m.text.trim()}` });
+    }
+  }
+  if ((m.voice || m.video_note || m.audio) && !m.caption) return voiceFallback(m, src);
+  return ownerText(m, src);
+}
+
+// Voice/video-note/audio → text right here in the bridge (DM, or group fallback): the transcript IS the
+// message, so batching, per-topic sessions and !new compaction all see plain text. Soniox only (2026-11-16):
+// on failure reply directly — no brain run, no waiting.
+function voiceFallback(m, src) {
+  {
     tgReact(m, '👀');
     const tr = newTrace('voice', src);
     transcribeVoice(m, tr).then((t) => {
@@ -703,8 +732,10 @@ function ownerMessage(m, src) {
           : 'ویس الان تبدیل نشد (سونیکس جواب نداد)؛ فعلاً متنش رو برام تایپ کن 🙏',
       }).catch((e) => log('stt-fail notice', e.message));
     });
-    return;
   }
+}
+
+function ownerText(m, src) {
   const hasFile = m.document || m.photo || m.voice || m.audio || m.video || m.video_note;
   let message = (m.text || m.caption || '').trim().replace(/^\/start$/, '/help') || (hasFile ? 'این فایل‌ها را ببین.' : '');
   // A reply in the bot chat (e.g. to a 📨 guest notice) only makes sense with the quoted message.
