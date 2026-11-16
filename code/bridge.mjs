@@ -724,11 +724,33 @@ function ownerMessage(m, src) {
     if (rid && dibiPending.has(rid) && (m.text || '').trim()) { clearTimeout(dibiPending.get(rid)); dibiPending.delete(rid); }
     if ((m.voice || m.video_note || m.audio) && !m.caption && env.DIBI_IN_GROUP !== '0') {
       tgReact(m, '👀');
-      dibiPending.set(m.message_id, setTimeout(() => {
+      // Dibi talks back locally (~/dibi-bot/signals): fail-<id> → we answer once (fallback), text-<id> → its
+      // transcript when posting as the owner failed. Checked every 2 s until the transcript reply arrives.
+      const sigDir = join(process.env.USERPROFILE || '', 'dibi-bot', 'signals');
+      const started = Date.now();
+      const tick = () => {
+        if (!dibiPending.has(m.message_id)) return;
+        const fFail = join(sigDir, `fail-${m.message_id}.json`), fText = join(sigDir, `text-${m.message_id}.json`);
+        let sig = null;
+        try {
+          if (existsSync(fText)) { sig = { text: JSON.parse(readFileSync(fText, 'utf8')).text }; unlinkSync(fText); }
+          else if (existsSync(fFail)) { sig = { fail: JSON.parse(readFileSync(fFail, 'utf8')).err || '' }; unlinkSync(fFail); }
+        } catch (e) { log('dibi signal', e.message); }
+        if (!sig && Date.now() - started < DIBI_WAIT_MS) { dibiPending.set(m.message_id, setTimeout(tick, 2000)); return; }
         dibiPending.delete(m.message_id);
-        log('dibi: no transcript for voice', m.message_id, '→ bridge transcribes it');
+        if (sig?.text) return handle({ src, tg: m, message: `[Voice message, transcribed by دیبی (soniox); this is محمدحسین speaking — treat it exactly like his typed message]\n${sig.text}` });
+        if (sig?.fail && /balance|402/i.test(sig.fail)) {
+          log('dibi: soniox balance empty for voice', m.message_id);
+          return tgApi('sendMessage', {
+            chat_id: m.chat.id, ...(m.is_topic_message && { message_thread_id: m.message_thread_id }),
+            reply_parameters: { message_id: m.message_id },
+            text: 'ویس تبدیل نشد: اعتبار سونیکس تموم شده (console.soniox.com → Billing). فعلاً متنش رو تایپ کن 🙏',
+          }).catch((e) => log('stt-fail notice', e.message));
+        }
+        log('dibi:', sig ? 'failed (' + sig.fail.slice(0, 60) + ')' : 'no transcript', 'for voice', m.message_id, '→ bridge transcribes it');
         voiceFallback(m, src);
-      }, DIBI_WAIT_MS));
+      };
+      dibiPending.set(m.message_id, setTimeout(tick, 2000));
       return;
     }
     // Dibi's transcript arrives as the owner's reply to his own voice: the quote is a voice, don't add a note.
