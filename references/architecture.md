@@ -101,7 +101,7 @@
   account (skill `soniox`). REMOVED on 2026-11-16: transcribe.py (Gemini + Worker `/laptop/v2t` + `/laptop/gemini` relay, the
   third-party "Soniex" gateway 212.80.22.165), summon_transcriber.py, the Worker Groq relay, the GEMINI_/GROQ_/SONIEX_/V2T_ env
   vars and Worker secrets, the local faster-whisper models in ~/.cache/huggingface, and the overnight v2t probe. Backups are in
-  `gap-claude-bridge/.backup-soniox-20261116/`. Earlier engine history (Groq, then local whisper, then Gemini) is in history.md.
+  `~/backups/pesarkhaleh-soniox-20261116/` (local only). Earlier engine history (Groq, then local whisper, then Gemini) is in history.md.
 - `!send <text>` as a reply to a 📨 notice: the bot sends the text to that guest (id parsed from the notice).
 - The bot DM still works (and inline needs it); first DM after the switch says the group is the main place.
 - Worker: owner messages in the group are also queued with a "laptop is off" notice in that topic.
