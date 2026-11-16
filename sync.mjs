@@ -13,7 +13,7 @@ const dest = join(here, 'code');
 // the secret values stay only on the laptop.
 const skip = new Set(['.git', '.env', 'bridge.log', 'bridge.log.1', 'node_modules', 'inbox', 'brain', 'uploads', 'outbox',
   '.last-good', '.broken', '.wrangler', 'restart.flag', 'state.json', 'guests']);
-const skipName = (n) => skip.has(n) || /^hw\d+/i.test(n) || /\.bak/.test(n);
+const skipName = (n) => skip.has(n) || /^hw\d+/i.test(n) || /\.bak/.test(n) || /^\.backup/.test(n) || /^\.pre-/.test(n) || n === '.last-good';
 
 if (!existsSync(live)) throw new Error('live code not found: ' + live);
 rmSync(dest, { recursive: true, force: true });
