@@ -22,7 +22,7 @@ const { MM_URL, MM_TOKEN } = env;
 // DNS pin fallback (2026-11-17): serve the bridge's last-good IP (state.json dnsPins) when the resolver
 // is in one of its dead windows, so digests still read Gap. Mirrors the patch in bridge.mjs.
 {
-  const dns = await import('node:dns');
+  const dns = (await import('node:dns')).default; // default export (CJS object) — the namespace is frozen and dns.lookup must stay writable
   let pins = {};
   try { pins = JSON.parse(readFileSync(join(here, 'state.json'), 'utf8')).dnsPins || {}; } catch { /* none yet */ }
   const host = MM_URL.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
