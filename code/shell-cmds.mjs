@@ -145,6 +145,13 @@ export const SHELL_CMDS = [
     const r = await ps(`try { (Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop).WmiSetBrightness(1,${n}); 'ok' } catch { 'na' }`, 30000);
     return r.out.includes('ok') ? '☀️ روشنایی ' + n + '٪.' : 'روشنایی از دستور پشتیبانی نشد (مانیتور خارجی؟).';
   } },
+  // Screen off, PC keeps running (owner, 2026-11-18): agents continue in the background. PostMessage, not
+  // SendMessage: SendMessage to HWND_BROADCAST waits on every window and can hang. Sleep on AC is forced off
+  // first so the laptop never suspends while the screen is dark. Mouse/key turns the screen back on.
+  { a: ['screenoff', 'monitoroff', 'صفحه', 'مانیتور', 'صفحه‌خاموش', 'خاموش‌صفحه'], h: '`screenoff` — خاموش کردن صفحه؛ کارها و ایجنت‌ها ادامه می‌دهند', run: async () => {
+    const r = await ps(`powercfg /change standby-timeout-ac 0; powercfg /change hibernate-timeout-ac 0; Add-Type -Name Screen -Namespace Win32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(int hWnd, int Msg, int wParam, int lParam);'; [Win32.Screen]::PostMessage(0xFFFF, 0x0112, 0xF170, 2) | Out-Null; 'ok'`, 30000);
+    return r.out.includes('ok') ? '🌑 صفحه خاموش شد؛ لپ‌تاپ بیدار است و کارها ادامه دارند. با تکان موس روشن می‌شود.' : 'نشد: ' + (r.err.trim() || '').slice(0, 150);
+  } },
   { a: ['notify', 'اعلان'], h: '`notify <متن>` — پیام روی صفحه لپ‌تاپ', run: async (arg) => {
     if (!arg) return 'چه متنی روی صفحه نشان بدهم؟';
     await ps(`(New-Object -ComObject WScript.Shell).Popup(${JSON.stringify(arg.slice(0, 300))}, 30, 'پسرخاله', 64) | Out-Null`, 45000);
@@ -191,7 +198,7 @@ export const SHELL_HELP = [
   '`status` باتری/CPU/RAM/دیسک/آپ‌تایم · `battery` باتری · `temp` دمای CPU · `ps` پروسه‌های پرکار · `ps <نام>` جستجو · `kill <نام>` بستن · `services [نام]` سرویس‌ها · `bridge` سلامت خود پسرخاله',
   '',
   '**صفحه و صدا**',
-  '`screenshot` عکس کل صفحه همین‌جا · `clipimg` عکس کلیپ‌بورد · `clip` متن کلیپ‌بورد · `volume 40` میزان صدا · `mute` قطع/وصل · `play`/`next`/`prev` موزیک · `brightness 70` روشنایی · `notify <متن>` پیام روی صفحه',
+  '`screenshot` عکس کل صفحه همین‌جا · `clipimg` عکس کلیپ‌بورد · `clip` متن کلیپ‌بورد · `volume 40` میزان صدا · `mute` قطع/وصل · `play`/`next`/`prev` موزیک · `brightness 70` روشنایی · `screenoff` (یا «صفحه») خاموش کردن صفحه، کارها ادامه دارند · `notify <متن>` پیام روی صفحه',
   '',
   '**فایل و برنامه**',
   '`open <برنامه|لینک|مسیر>` باز کردن · `ls [مسیر]` لیست · `cat <مسیر>` آخر ۳۰ خط · `find <نام> [مسیر]` جستجو · `file <مسیر>` فایل را همین‌جا بفرست · `dl <لینک>` دانلود',
@@ -204,7 +211,7 @@ export const SHELL_HELP = [
   '',
   '**دستور خام PowerShell**',
   'مثل `Get-Date` یا `ipconfig /all` — هرچه شناخته نشود عیناً اجرا می‌شود. خروجی طولانی بریده می‌شود؛ کار طولانی را با `Start-Process` جدا بیاورید.',
-  'دستورهای فارسی هم همین‌ها هستند: وضعیت، باتری، پروسه‌ها، ببند، اسکرین، صدا، سکوت، پخش، بعدی، قبلی، نور، اعلان، کلید، تایپ، قفل، خواب، خاموش، ری‌استارت، لغو، آی‌پی، وای‌فای، دیسک، پینگ، دما، فایل‌ها، بخوان، پیدا، بفرست، دانلود، بازکن، سرویس‌ها، پل.',
+  'دستورهای فارسی هم همین‌ها هستند: وضعیت، باتری، پروسه‌ها، ببند، اسکرین، صدا، سکوت، پخش، بعدی، قبلی، نور، صفحه، اعلان، کلید، تایپ، قفل، خواب، خاموش، ری‌استارت، لغو، آی‌پی، وای‌فای، دیسک، پینگ، دما، فایل‌ها، بخوان، پیدا، بفرست، دانلود، بازکن، سرویس‌ها، پل.',
 ].join('\n');
 export async function runShell(cmdText, reply) {
   const hard = /^\s*(format|diskpart|cipher)\b/i.test(cmdText);
