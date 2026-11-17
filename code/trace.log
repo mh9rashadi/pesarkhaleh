@@ -66,3 +66,6 @@
 {"id":"ae4b","kind":"msg","label":"#1083","t0":1794915007294,"steps":[{"s":"go","rel":3010},{"s":"go","rel":3010}],"status":"shell","ms":4722}
 {"id":"02b3","kind":"msg","label":"#1083","t0":1794915021744,"steps":[{"s":"go","rel":3006},{"s":"go","rel":3007}],"status":"shell:Lock","ms":3272}
 {"id":"aec0","kind":"msg","label":"#3","t0":1794922676694,"steps":[{"s":"go","rel":3011},{"s":"files","rel":3220},{"s":"brain","rel":159827,"note":"claude-opus-5-5"}],"status":"ok","ms":160344}
+{"id":"1d96","kind":"msg","label":"#1083","t0":1794947811580,"steps":[{"s":"go","rel":3008},{"s":"go","rel":3008}],"status":"shell:Screenoff","ms":10213}
+{"id":"6fb2","kind":"msg","label":"#1083","t0":1794947847522,"steps":[{"s":"go","rel":3013},{"s":"go","rel":3013}],"status":"shell:Screenoff","ms":144905}
+{"id":"430d","kind":"msg","label":"#1083","t0":1794948138489,"steps":[{"s":"go","rel":3009},{"s":"go","rel":3009}],"status":"shell:Screenoff","ms":125073}

@@ -142,15 +142,17 @@ export const SHELL_CMDS = [
   { a: ['prev', 'قبلی'], h: '`prev` — تراک قبلی', run: async () => { await pressVk(0xB1); return '⏮ قبلی.'; } },
   { a: ['brightness', 'نور'], h: '`brightness <0-100>` — روشنایی صفحه', run: async (arg) => {
     const n = Math.max(0, Math.min(100, Number(arg) || 50));
-    const r = await ps(`try { (Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop).WmiSetBrightness(1,${n}); 'ok' } catch { 'na' }`, 30000);
+    const r = await ps(`try { Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{ Timeout = 1; Brightness = [byte]${n} } -ErrorAction Stop | Out-Null; 'ok' } catch { 'na' }`, 30000);
     return r.out.includes('ok') ? '☀️ روشنایی ' + n + '٪.' : 'روشنایی از دستور پشتیبانی نشد (مانیتور خارجی؟).';
   } },
-  // Screen off, PC keeps running (owner, 2026-11-18): agents continue in the background. PostMessage, not
-  // SendMessage: SendMessage to HWND_BROADCAST waits on every window and can hang. Sleep on AC is forced off
-  // first so the laptop never suspends while the screen is dark. Mouse/key turns the screen back on.
-  { a: ['screenoff', 'monitoroff', 'صفحه', 'مانیتور', 'صفحه‌خاموش', 'خاموش‌صفحه'], h: '`screenoff` — خاموش کردن صفحه؛ کارها و ایجنت‌ها ادامه می‌دهند', run: async () => {
-    const r = await ps(`powercfg /change standby-timeout-ac 0; powercfg /change hibernate-timeout-ac 0; Add-Type -Name Screen -Namespace Win32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(int hWnd, int Msg, int wParam, int lParam);'; [Win32.Screen]::PostMessage(0xFFFF, 0x0112, 0xF170, 2) | Out-Null; 'ok'`, 30000);
-    return r.out.includes('ok') ? '🌑 صفحه خاموش شد؛ لپ‌تاپ بیدار است و کارها ادامه دارند. با تکان موس روشن می‌شود.' : 'نشد: ' + (r.err.trim() || '').slice(0, 150);
+  // Dark screen, PC keeps running (owner, 2026-11-18): agents continue in the background. NOT a real
+  // display-off: on this Modern Standby laptop that enters standby in seconds (Wi-Fi drops, processes pause;
+  // verified in the event log). screen-dark.ps1 = brightness 0 + black topmost window + display-required
+  // request. Launched detached so ps()'s timeout does not kill it. Key/click/mouse move ends it.
+  { a: ['screenoff', 'dark', 'صفحه', 'مانیتور', 'تاریک', 'صفحه‌خاموش', 'خاموش‌صفحه'], h: '`screenoff` — صفحه سیاه و بی‌نور؛ اینترنت و ایجنت‌ها ادامه می‌دهند', run: async () => {
+    const script = join(here, 'screen-dark.ps1');
+    const r = await ps(`powercfg /change standby-timeout-ac 0; powercfg /change hibernate-timeout-ac 0; Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-STA','-File','${script.replace(/'/g, "''")}'; 'ok'`, 30000);
+    return r.out.includes('ok') ? '🌑 صفحه سیاه شد؛ اینترنت وصل و کارها ادامه دارند. با تکان موس یا یک کلید برمی‌گردد.' : 'نشد: ' + (r.err.trim() || '').slice(0, 150);
   } },
   { a: ['notify', 'اعلان'], h: '`notify <متن>` — پیام روی صفحه لپ‌تاپ', run: async (arg) => {
     if (!arg) return 'چه متنی روی صفحه نشان بدهم؟';
@@ -198,7 +200,7 @@ export const SHELL_HELP = [
   '`status` باتری/CPU/RAM/دیسک/آپ‌تایم · `battery` باتری · `temp` دمای CPU · `ps` پروسه‌های پرکار · `ps <نام>` جستجو · `kill <نام>` بستن · `services [نام]` سرویس‌ها · `bridge` سلامت خود پسرخاله',
   '',
   '**صفحه و صدا**',
-  '`screenshot` عکس کل صفحه همین‌جا · `clipimg` عکس کلیپ‌بورد · `clip` متن کلیپ‌بورد · `volume 40` میزان صدا · `mute` قطع/وصل · `play`/`next`/`prev` موزیک · `brightness 70` روشنایی · `screenoff` (یا «صفحه») خاموش کردن صفحه، کارها ادامه دارند · `notify <متن>` پیام روی صفحه',
+  '`screenshot` عکس کل صفحه همین‌جا · `clipimg` عکس کلیپ‌بورد · `clip` متن کلیپ‌بورد · `volume 40` میزان صدا · `mute` قطع/وصل · `play`/`next`/`prev` موزیک · `brightness 70` روشنایی · `screenoff` (یا «صفحه») صفحه سیاه و بی‌نور، اینترنت و کارها ادامه دارند · `notify <متن>` پیام روی صفحه',
   '',
   '**فایل و برنامه**',
   '`open <برنامه|لینک|مسیر>` باز کردن · `ls [مسیر]` لیست · `cat <مسیر>` آخر ۳۰ خط · `find <نام> [مسیر]` جستجو · `file <مسیر>` فایل را همین‌جا بفرست · `dl <لینک>` دانلود',
