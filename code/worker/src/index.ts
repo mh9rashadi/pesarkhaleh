@@ -17,6 +17,7 @@ export interface Env {
   DIBI_ALLOWED_USERS?: string; // comma-separated Telegram user ids (default TG_OWNER_ID)
   DIBI_ALLOWED_CHATS?: string; // chats where every sender is served
   DIBI_OWNER_POST_CHATS?: string; // default TG_GROUP_ID (پسرخاله group)
+  HOOSH_AUTH_TOKEN?: string; // company HooshCode (GLM) key: summaries for Dibi's long transcripts (2026-11-17)
   TG_OWNER_ID: string;
   TG_GROUP_ID?: string; // owner's private forum group
 }
@@ -269,6 +270,12 @@ export default {
     // دیبی runs here, not on the laptop (2026-11-17, owner: the bot must work without his laptop).
     if (url.pathname === "/dibi/webhook" && req.method === "POST") return dibiWebhook(req, env, ctx);
     if (url.pathname === "/dibi/sx" && req.method === "POST") return dibiSoniox(req, env, ctx);
+    // Test hook for the long-text path: POST /dibi/test-long {"chat","text"} (auth: Bearer LAPTOP_SECRET).
+    if (url.pathname === "/dibi/test-long" && req.method === "POST") {
+      if (req.headers.get("Authorization") !== `Bearer ${env.LAPTOP_SECRET}`) return new Response("forbidden", { status: 403 });
+      const b = (await req.json()) as { chat: number; text: string; reply_to?: number };
+      return Response.json(await dibiSend(env, b.chat, b.reply_to || 0, 0, b.text));
+    }
 
     // Telegram relay for the laptop (trial, 2026-11-12): api.telegram.org is often unreachable from the
     // laptop's network, Cloudflare is not. The laptop sends Bot API calls here; the token stays in the Worker.
@@ -554,5 +561,63 @@ async function dibiDeliver(env: Env, d: { chat: number; msg: number; thread: num
     await hub(env).pushDibi({ chat_id: d.chat, message_id: d.msg, ...(d.text ? { text: d.text } : { fail: d.fail || "" }) });
     return;
   }
-  await dibiReply(env, d.chat, d.msg, d.thread, d.text ?? failText(d.fail || ""));
+  await dibiSend(env, d.chat, d.msg, d.thread, d.text ?? failText(d.fail || ""));
+}
+
+// Long transcripts (2026-11-17, owner): text that does not fit in ONE Telegram message (4096 chars) is sent as a
+// .txt file replying to the voice, with a short summary as the caption (GLM via HooshCode). If the summary fails,
+// the caption says so; the file always goes out. If the file upload fails, fall back to chunked messages.
+const TG_MAX = 4096, CAPTION_MAX = 1024;
+async function dibiSend(env: Env, chat: number, replyTo: number, thread: number, text: string) {
+  if (text.length <= TG_MAX) { await dibiReply(env, chat, replyTo, thread, text); return { mode: "text" }; }
+  await dtg(env, "sendChatAction", { chat_id: chat, ...(thread && { message_thread_id: thread }), action: "upload_document" });
+  const summary = await dibiSummary(env, text);
+  let caption = "📄 متن کامل توی فایل.\n\n" + (summary ? "خلاصه:\n" + summary : "(خلاصه آماده نشد.)");
+  let extra = "";
+  if (caption.length > CAPTION_MAX) { extra = caption; caption = "📄 متن کامل توی فایل؛ خلاصه پیام بعدی."; }
+  const stamp = new Date(Date.now() + 3.5 * 3600_000).toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+  const fd = new FormData();
+  fd.append("chat_id", String(chat));
+  if (thread) fd.append("message_thread_id", String(thread));
+  if (replyTo) fd.append("reply_parameters", JSON.stringify({ message_id: replyTo, allow_sending_without_reply: true }));
+  fd.append("caption", caption);
+  fd.append("document", new Blob(["\uFEFF" + text], { type: "text/plain; charset=utf-8" }), `dibi_${stamp}.txt`);
+  let ok = false;
+  for (let i = 0; i < 3 && !ok; i++) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${env.DIBI_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+      const j = (await r.json()) as any;
+      ok = !!j.ok;
+      if (!ok) console.error("dibi sendDocument", j.description);
+      if (!ok && r.status < 500) break;
+    } catch (e) { console.error("dibi sendDocument", (e as Error).message); }
+  }
+  if (!ok) { await dibiReply(env, chat, replyTo, thread, text); return { mode: "chunks", summary: !!summary }; }
+  if (extra) await dibiReply(env, chat, replyTo, thread, extra);
+  return { mode: "file", summary: !!summary };
+}
+
+async function dibiSummary(env: Env, text: string): Promise<string> {
+  if (!env.HOOSH_AUTH_TOKEN) return "";
+  try {
+    const r = await fetch("https://claude.flearning.ir/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": env.HOOSH_AUTH_TOKEN, Authorization: `Bearer ${env.HOOSH_AUTH_TOKEN}`,
+        "anthropic-version": "2023-06-01", "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "glm-5.3-flash", max_tokens: 3000,
+        system: "You summarise transcripts of voice notes and calls. Write in the transcript's own language (usually Persian). " +
+          "Give a faithful, concise summary: 3 to 7 short bullet lines starting with «• », covering the main points, decisions, " +
+          "numbers, names and action items. No intro, no title, no markdown. Hard limit: 700 characters.",
+        messages: [{ role: "user", content: "متن پیاده‌شده:\n\n" + text.slice(0, 120_000) }],
+      }),
+      signal: AbortSignal.timeout(90_000),
+    });
+    const j = (await r.json()) as any;
+    if (!r.ok) { console.error("dibi summary", r.status, JSON.stringify(j).slice(0, 200)); return ""; }
+    const out = (j.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("").trim();
+    return out.replace(/\*\*/g, "").slice(0, 900);
+  } catch (e) { console.error("dibi summary", (e as Error).message); return ""; }
 }

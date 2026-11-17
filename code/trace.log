@@ -50,3 +50,4 @@
 {"id":"66aa","kind":"voice","label":"tg:#1116","t0":1794830408443,"steps":[{"s":"stt","rel":2119,"note":"soniox✗2s"}],"status":"stt-failed","ms":2120}
 {"id":"6e36","kind":"msg","label":"#815","t0":1794843058399,"steps":[{"s":"go","rel":3006},{"s":"files","rel":3185},{"s":"brain","rel":139526,"note":"claude-opus-5-5"}],"status":"ok","ms":140299}
 {"id":"25c4","kind":"msg","label":"#815","t0":1794843078744,"steps":[{"s":"go","rel":141585},{"s":"files","rel":141917},{"s":"brain","rel":234364,"note":"claude-opus-5-5"}],"status":"ok","ms":256629}
+{"id":"5784","kind":"msg","label":"#6","t0":1794902493819,"steps":[{"s":"go","rel":3020},{"s":"files","rel":3504},{"s":"brain","rel":29449,"note":"glm-5.3-flash"}],"status":"ok","ms":29685}
