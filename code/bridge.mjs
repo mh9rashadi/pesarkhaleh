@@ -638,7 +638,7 @@ function tgGroupMessage(m) {
     }
     // A «سعید» topic (owner, 2026-11-17; سعید = علی‌اصغر رجبی @a.rajabi): dictation relay — voice/text
     // gets cleaned and sent as the owner's Gap DM to Saeed. !undo deletes the last sent post.
-    if (/سعید/.test(sess(key).name || '')) {
+    if (/سعید|saeid/i.test(sess(key).name || '')) {
       sess(key).relay = 'a.rajabi'; delete sess(key).awaiting; saveState();
       reply(RELAY_HELP, 'tg:' + key).catch(() => {});
       return;
@@ -1774,7 +1774,7 @@ function enqueue(post, cmd, arg) {
     if (cmd === undefined && !post.job && S?.awaiting && S.brain) { delete S.awaiting; saveState(); }
     // «سعید» relay topic (2026-11-17): any typed text or transcribed voice = dictation → cleaned → sent
     // as the owner's Gap DM to Saeed (@a.rajabi). Topics named before this feature get the flag on first use.
-    if (cmd === undefined && !post.job && !post.inline && S && (S.relay || (/سعید/.test(S?.name || '') && (S.relay = 'a.rajabi', saveState())))) {
+    if (cmd === undefined && !post.job && !post.inline && S && (S.relay || (/سعید|saeid/i.test(S?.name || '') && (S.relay = 'a.rajabi', saveState())))) {
       trStep(post.trace, 'go');
       const raw = post.message.trim();
       log('relay dictation', raw.slice(0, 60));
