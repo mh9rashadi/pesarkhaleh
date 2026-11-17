@@ -635,6 +635,13 @@ function tgGroupMessage(m) {
       reply(SHELL_HELP, 'tg:' + key).catch(() => {});
       return;
     }
+    // A «سعید» topic (owner, 2026-11-17; سعید = علی‌اصغر رجبی @a.rajabi): dictation relay — voice/text
+    // gets cleaned and sent as the owner's Gap DM to Saeed. !undo deletes the last sent post.
+    if (/سعید/.test(sess(key).name || '')) {
+      sess(key).relay = 'a.rajabi'; delete sess(key).awaiting; saveState();
+      reply(RELAY_HELP, 'tg:' + key).catch(() => {});
+      return;
+    }
     if (needsBrain(key)) askBrain('tg:' + key);
     return;
   }
@@ -1123,6 +1130,47 @@ const charterOf = (key) => {
 
 // Remote-desktop topic commands live in shell-cmds.mjs (imported at the top).
 
+// --- «سعید» dictation-relay topic (owner, 2026-11-17; سعید = علی‌اصغر رجبی, @a.rajabi on Gap): what he
+// says (voice → دیبی/Soniox transcript, or typed text) becomes a CLEANED message posted as his own Gap DM
+// to Saeed. Cleaning is a tool-less one-shot GLM run that only strips fillers/stutters and fixes
+// punctuation — never rewrites meaning. `!undo` deletes the last sent post from Gap.
+const RELAY_HELP = [
+  '📤 این تاپیک دیکته به **سعید** (علی‌اصغر رجبی) است:',
+  'هر ویس یا متنی اینجا بفرستی: پرگویی‌ها و مکث‌هاش پاک می‌شود، متن تمیز و مرتب می‌شود و **همان‌طور به‌عنوان پیام خودت در گپ برای سعید** ارسال می‌شود؛ متن نهایی را همین‌جا نشان می‌دهم.',
+  '`!undo` آخرین پیام ارسالی را از گپ حذف می‌کند.',
+  'اگر خواستی قبل ارسال تأیید بگیری، بگو تا برایت حالت تأییدی بگذارم.',
+].join('\n');
+function cleanDictation(text) {
+  return new Promise((resolve) => {
+    const p = spawn(CLAUDE, ['-p', '--model', 'glm-5.3', '--output-format', 'json', '--tools', '',
+      '--system-prompt',
+      'تو ویرایشگر پیام‌های دیکته‌شده‌ی محمدحسین رشادی هستی. ورودی، متن خام تشخیص گفتار (ASR) است و خروجی باید پیام تمیز برای همکارش باشد: کلمات پرکننده (اِممم، اِم، یعنی، چیزه…)، تکرارها، سرفه و مکث‌ها حذف شود؛ جمله‌بندی و نقطه‌گذاری مرتب شود؛ لحن و انتخاب کلمات خود نویسنده دست نخورد و هیچ مطلب یا احوال‌پرسی جدیدی اضافه نشود. فقط و فقط متن نهایی را بنویس، بدون هیچ توضیح، عنوان یا گیومه.'],
+      { cwd: state.cwd, windowsHide: true, env: claudeEnv('chat') });
+    let out = '';
+    const t = setTimeout(() => { killTree(p); resolve(null); }, 60000);
+    p.stdout.on('data', (d) => (out += d));
+    p.on('error', () => { clearTimeout(t); resolve(null); });
+    p.on('close', () => {
+      clearTimeout(t);
+      try { const j = JSON.parse(out); resolve(j.is_error ? null : (j.result || '').trim() || null); } catch { resolve(null); }
+    });
+    p.stdin.end('این متن دیکته‌شده را تمیز کن:\n\n' + text);
+  });
+}
+const gapDMCache = new Map(); // username → dm channel id
+async function gapDMSend(text, username) {
+  try {
+    if (!gapDMCache.has(username)) {
+      const u = await api('/users/username/' + username);
+      const ch = await api('/channels/direct', { method: 'POST', body: [me.id, u.id] });
+      gapDMCache.set(username, ch.id);
+    }
+    const post = await api('/posts', { method: 'POST', body: { channel_id: gapDMCache.get(username), message: text } });
+    log('relay DM →', username, 'post', post.id);
+    return post;
+  } catch (e) { return { err: e.message }; }
+}
+
 // One-shot compaction of a topic's old session: resumes it without tools and asks for a hand-over summary.
 function summarizeSession(sid) {
   return new Promise((resolve) => {
@@ -1476,6 +1524,17 @@ async function instant(cmd, arg, to, post) {
       state.verbose = arg !== 'off'; saveState();
       await reply('verbose: ' + (state.verbose ? 'on' : 'off'));
       return true;
+    case '/undo': {
+      // سعید relay: delete the last post this bridge sent to Gap on the owner's behalf.
+      const S1 = sess(sessKey(to));
+      if (!S1?.lastSent) { await reply('چیزی برای حذف نیست (آخرین ارسال یادم نیست).'); return true; }
+      try {
+        await api(`/posts/${S1.lastSent.id}`, { method: 'DELETE' });
+        delete S1.lastSent; saveState();
+        await reply('🗑 آخرین پیام از گپ حذف شد.');
+      } catch (e) { await reply('حذف نشد: ' + e.message); }
+      return true;
+    }
     case '/trace': {
       // Last N requests with per-stage timings, in plain Persian (owner: «این چی میگه من نمیفهم»).
       // Stage codes → words: dl=دانلود ویس · stt=تبدیل به متن · go=صف و تجمیع · files=فایل‌ها · brain=هوش مصنوعی.
@@ -1702,8 +1761,9 @@ function enqueue(post, cmd, arg) {
       default: return reply('دستور ناشناخته. `!help` را بزن.');
     }
     const key = sessKey(target), S = sess(key);
-    // A topic the owner created has no brain yet: hold the message and show the menu.
-    if (cmd === undefined && !post.job && S && needsBrain(key) && !S.brain) {
+    // A topic the owner created has no brain yet: hold the message and show the menu. Special-purpose
+    // topics (shell / سعید relay) never ask for a brain.
+    if (cmd === undefined && !post.job && S && !S.shell && !S.relay && needsBrain(key) && !S.brain) {
       (pendingPosts.get(key) || pendingPosts.set(key, []).get(key)).push(post);
       if (!S.awaiting) await askBrain(target); else await reply('اول مغز را انتخاب کن (شماره یا اسم)؛ پیامت نگه داشته شد.');
       return;
@@ -1711,6 +1771,24 @@ function enqueue(post, cmd, arg) {
     // A normal message after a `!brain` menu means the menu was abandoned: disarm it so a stray number
     // later can't silently switch the topic's brain (2026-11-14).
     if (cmd === undefined && !post.job && S?.awaiting && S.brain) { delete S.awaiting; saveState(); }
+    // «سعید» relay topic (2026-11-17): any typed text or transcribed voice = dictation → cleaned → sent
+    // as the owner's Gap DM to Saeed (@a.rajabi). Topics named before this feature get the flag on first use.
+    if (cmd === undefined && !post.job && !post.inline && S && (S.relay || (/سعید/.test(S?.name || '') && (S.relay = 'a.rajabi', saveState())))) {
+      trStep(post.trace, 'go');
+      const raw = post.message.trim();
+      log('relay dictation', raw.slice(0, 60));
+      const clean = (await cleanDictation(raw)) || raw; // if the cleaner fails, the raw transcript still goes
+      const sent = await gapDMSend(clean, S.relay);
+      if (sent?.id) {
+        S.lastSent = { id: sent.id, at: Date.now() }; saveState();
+        await reply('📤 برای سعید فرستاده شد' + (clean === raw ? ' (خام، تمیزکار جواب نداد)' : '') + ':\n\n' + clean + '\n\n_حذفش: !undo_');
+        trEnd(post.trace, 'relay');
+      } else {
+        await reply('❌ به گپ نرسید (' + (sent?.err || 'ناشناخته') + ')؛ متن اینجا:\n\n' + clean);
+        trEnd(post.trace, 'relay:err');
+      }
+      return;
+    }
     // Remote-desktop topic: the message IS the command (typed or a transcribed voice). Known shortcuts
     // (SHELL_CMDS) map to practical actions; anything else runs as raw PowerShell. No brain, no router.
     // Topics named before this feature get the flag on first use.
