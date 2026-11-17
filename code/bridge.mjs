@@ -3,6 +3,7 @@
 // `claude -p` (resuming one session), and posts replies through an incoming webhook.
 // Run it through supervisor.mjs: exit code 75 means "restart me", crashes roll back.
 import { spawn, execFile } from 'node:child_process';
+import dnsMod from 'node:dns';
 import https from 'node:https';
 import {
   readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, renameSync, unlinkSync, statSync,
@@ -164,6 +165,41 @@ const schedulePath = join(here, 'schedule.json');
 if (!existsSync(schedulePath)) writeFileSync(schedulePath, JSON.stringify(SCHEDULE_DEFAULT, null, 2));
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+// --- DNS pin fallback (2026-11-17): the laptop's resolver dies in windows (ENOTFOUND in ~3 ms), cutting
+// Gap AND the Worker. We keep the last-good IPv4 of the hosts we depend on (refreshed every 20 min while
+// DNS works, persisted in state.json across restarts) and serve it from dns.lookup whenever getaddrinfo
+// fails — a hosts-file pin without needing admin. Empirically verified: node fetch/websocket honor the patch.
+const PIN_HOSTS = ['gap.bk1.basalam.dev', 'pesarkhaleh.mh9rashady.workers.dev', 'api.telegram.org'];
+const dnsPins = () => (state.dnsPins ||= {});
+async function refreshDnsPins() {
+  let changed = false;
+  for (const h of PIN_HOSTS) {
+    try {
+      const a = await dnsMod.promises.resolve4(h);
+      if (a?.length && dnsPins()[h] !== a[0]) { dnsPins()[h] = a[0]; changed = true; }
+    } catch { /* keep the last-good pin */ }
+  }
+  if (changed) { saveState(); log('dns pins updated', JSON.stringify(dnsPins())); }
+}
+{
+  const orig = dnsMod.lookup.bind(dnsMod);
+  dnsMod.lookup = (name, opts, cb) => {
+    const cb2 = typeof opts === 'function' ? opts : cb;
+    const o = typeof opts === 'function' ? {} : opts;
+    orig(name, o, (err, addr, fam) => {
+      if (!err) return cb2(null, addr, fam);
+      const pin = dnsPins()[String(name).toLowerCase()];
+      if (pin) {
+        log('dns pin used for', String(name));
+        return o.all ? cb2(null, [{ address: pin, family: 4 }]) : cb2(null, pin, 4);
+      }
+      return cb2(err);
+    });
+  };
+}
+setInterval(() => { refreshDnsPins().catch(() => {}); }, 20 * 60000);
+refreshDnsPins().catch(() => {}); // first pin refresh at boot (state.json may already carry last-good pins)
 
 // --- Request tracing (2026-11-13): every user request gets a 4-char id; steps mark stage boundaries
 // (arrival → download tries → stt engine attempts → queue wait → brain → send) with wall-clock times.

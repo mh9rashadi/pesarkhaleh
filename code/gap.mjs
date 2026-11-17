@@ -19,6 +19,26 @@ const env = Object.fromEntries(
 );
 const { MM_URL, MM_TOKEN } = env;
 
+// DNS pin fallback (2026-11-17): serve the bridge's last-good IP (state.json dnsPins) when the resolver
+// is in one of its dead windows, so digests still read Gap. Mirrors the patch in bridge.mjs.
+{
+  const dns = await import('node:dns');
+  let pins = {};
+  try { pins = JSON.parse(readFileSync(join(here, 'state.json'), 'utf8')).dnsPins || {}; } catch { /* none yet */ }
+  const host = MM_URL.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+  const orig = dns.lookup.bind(dns);
+  dns.lookup = (name, opts, cb) => {
+    const cb2 = typeof opts === 'function' ? opts : cb;
+    const o = typeof opts === 'function' ? {} : opts;
+    orig(name, o, (err, addr, fam) => {
+      if (!err) return cb2(null, addr, fam);
+      const pin = pins[String(name).toLowerCase()] || (String(name).toLowerCase() === host && pins[host]);
+      if (pin) return o.all ? cb2(null, [{ address: pin, family: 4 }]) : cb2(null, pin, 4);
+      return cb2(err);
+    });
+  };
+}
+
 async function api(path, body) {
   // Only search uses POST, and it is read-only on the server.
   const r = await fetch(MM_URL + '/api/v4' + path, {
