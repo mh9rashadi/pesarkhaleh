@@ -13,7 +13,10 @@ export interface Env {
   TG_WEBHOOK_SECRET: string;
   LAPTOP_SECRET: string;
   SONIOX_API_KEY?: string; // owner's own Soniox (2026-11-16): voice→text started from the Worker
-  DIBI_BOT_TOKEN?: string; // دیبی voice→text bot (2026-11-16), relayed like the main bot
+  DIBI_BOT_TOKEN?: string; // دیبی voice→text bot (2026-11-16); runs fully in this Worker since 2026-11-17
+  DIBI_ALLOWED_USERS?: string; // comma-separated Telegram user ids (default TG_OWNER_ID)
+  DIBI_ALLOWED_CHATS?: string; // chats where every sender is served
+  DIBI_OWNER_POST_CHATS?: string; // default TG_GROUP_ID (پسرخاله group)
   TG_OWNER_ID: string;
   TG_GROUP_ID?: string; // owner's private forum group
 }
@@ -44,14 +47,14 @@ type LiteLog = { at: number; user: string; assistant: string };
 
 // One Durable Object holds all state, so reads are strongly consistent (KV is not).
 export class Hub extends DurableObject<Env> {
-  async poll(): Promise<{ updates: TgUpdate[]; lite: LiteLog[] }> {
+  async poll(): Promise<{ updates: TgUpdate[]; lite: LiteLog[]; dibi: DibiItem[] }> {
     await this.ctx.storage.put("lastSeen", Date.now());
     const updates = (await this.ctx.storage.get<TgUpdate[]>("queue")) ?? [];
     const lite = (await this.ctx.storage.get<LiteLog[]>("liteUnsynced")) ?? [];
     await this.ctx.storage.put("queue", []);
     await this.ctx.storage.put("liteUnsynced", []);
     await this.ctx.storage.put("noticed", []);
-    return { updates, lite };
+    return { updates, lite, dibi: await this.takeDibi() };
   }
 
   async laptopAlive(): Promise<boolean> {
@@ -98,7 +101,32 @@ export class Hub extends DurableObject<Env> {
   async reset(): Promise<void> {
     await this.ctx.storage.put("history", []);
   }
+
+  // دیبی (2026-11-17): de-dupe keys (Dibi update ids, Soniox job ids) in their own list, so they can never
+  // collide with the main bot's update ids.
+  async claimKey(key: string): Promise<boolean> {
+    const seen = (await this.ctx.storage.get<string[]>("dibiSeen")) ?? [];
+    if (seen.includes(key)) return false;
+    await this.ctx.storage.put("dibiSeen", [...seen.slice(-300), key]);
+    return true;
+  }
+
+  // Transcripts of the owner's voices in the پسرخاله group, waiting for the laptop bridge to post them from
+  // his own account (post_as_owner.py). Handed out once by takeDibi().
+  async pushDibi(item: DibiItem): Promise<void> {
+    const q = (await this.ctx.storage.get<DibiItem[]>("dibiQueue")) ?? [];
+    q.push(item);
+    await this.ctx.storage.put("dibiQueue", q.slice(-100));
+  }
+
+  async takeDibi(): Promise<DibiItem[]> {
+    const q = (await this.ctx.storage.get<DibiItem[]>("dibiQueue")) ?? [];
+    if (q.length) await this.ctx.storage.put("dibiQueue", []);
+    return q;
+  }
 }
+
+type DibiItem = { chat_id: number; message_id: number; text?: string; fail?: string };
 
 const hub = (env: Env) => env.HUB.get(env.HUB.idFromName("main"));
 
@@ -193,7 +221,7 @@ async function answerLite(env: Env, m: TgMessage) {
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
     if (url.pathname === "/telegram" && req.method === "POST") {
@@ -237,6 +265,10 @@ export default {
       }
       return Response.json(await hub(env).poll());
     }
+
+    // دیبی runs here, not on the laptop (2026-11-17, owner: the bot must work without his laptop).
+    if (url.pathname === "/dibi/webhook" && req.method === "POST") return dibiWebhook(req, env, ctx);
+    if (url.pathname === "/dibi/sx" && req.method === "POST") return dibiSoniox(req, env, ctx);
 
     // Telegram relay for the laptop (trial, 2026-11-12): api.telegram.org is often unreachable from the
     // laptop's network, Cloudflare is not. The laptop sends Bot API calls here; the token stays in the Worker.
@@ -324,3 +356,203 @@ export default {
     return new Response("پسرخاله اینجاست 👋");
   },
 } satisfies ExportedHandler<Env>;
+
+// ───────────────────────── دیبی (Dibi) — voice→text bot, fully on Cloudflare (2026-11-17) ─────────────────────────
+// Before this, Dibi ran on the owner's laptop (~/dibi-bot/dibi.mjs) and only relayed through this Worker. The owner
+// asked for it to work with the laptop off, so the whole bot lives here now:
+//   Telegram → POST /dibi/webhook  → fetch audio, upload to Soniox, create the job with webhook_url=/dibi/sx
+//   Soniox   → POST /dibi/sx       → read the transcript, reply to the voice, delete job + file
+// No state on the laptop. The one exception is the owner's own voice in the پسرخاله group: that transcript must be
+// posted FROM HIS ACCOUNT (post_as_owner.py, Telethon), which only the laptop can do. If the laptop bridge is alive
+// the text is queued for it (/laptop/poll → "dibi"); if not, Dibi replies as itself so the text is never lost.
+// Auth: Telegram secret_token and Soniox webhook header are both derived from TG_WEBHOOK_SECRET (no new secret).
+// Config (wrangler vars): DIBI_ALLOWED_USERS (default owner), DIBI_ALLOWED_CHATS, DIBI_OWNER_POST_CHATS.
+
+const DIBI_MODEL = "stt-async-v6";
+const sha256hex = async (s: string) =>
+  [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+const dibiSecret = (env: Env) => sha256hex("dibi:" + env.TG_WEBHOOK_SECRET);
+const ids = (s: string | undefined) => new Set((s || "").split(",").map((x) => Number(x.trim())).filter(Boolean));
+
+async function dtg(env: Env, method: string, body: unknown): Promise<any> {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${env.DIBI_BOT_TOKEN}/${method}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const j = (await r.json()) as any;
+      if (j.ok || r.status < 500) return j;
+    } catch {}
+    await new Promise((res) => setTimeout(res, 1500 * (i + 1)));
+  }
+  return { ok: false };
+}
+
+function dibiChunks(text: string, n = 4000): string[] {
+  const out: string[] = [];
+  let s = text;
+  while (s.length > n) {
+    let cut = s.lastIndexOf("\n", n);
+    if (cut < n / 2) cut = s.lastIndexOf(" ", n);
+    if (cut < n / 2) cut = n;
+    out.push(s.slice(0, cut));
+    s = s.slice(cut).replace(/^\s+/, "");
+  }
+  if (s) out.push(s);
+  return out;
+}
+
+// Every part replies to the voice, so readers (call_sync.py) can collect the whole transcript.
+async function dibiReply(env: Env, chat: number, replyTo: number, thread: number, text: string) {
+  for (const part of dibiChunks(text)) {
+    await dtg(env, "sendMessage", {
+      chat_id: chat, ...(thread && { message_thread_id: thread }),
+      reply_parameters: { message_id: replyTo, allow_sending_without_reply: true }, text: part,
+    });
+  }
+}
+
+const audioOf = (m: any) => m?.voice || m?.audio || m?.video_note
+  || (m?.document && /^(audio|video)\//.test(m.document.mime_type || "") ? m.document : null);
+
+const failText = (err: string) => /balance|402/i.test(err)
+  ? "اعتبار سونیکس تموم شده؛ از console.soniox.com شارژش کن."
+  : "نتونستم تبدیلش کنم، یه بار دیگه بفرست.";
+
+async function dibiWebhook(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  if (!env.DIBI_BOT_TOKEN || !env.SONIOX_API_KEY) return new Response("dibi not configured", { status: 503 });
+  if (req.headers.get("X-Telegram-Bot-Api-Secret-Token") !== (await dibiSecret(env))) {
+    return new Response("forbidden", { status: 403 });
+  }
+  const u = (await req.json()) as any;
+  const m = u.message;
+  if (!m?.chat) return new Response("ok");
+  const h = hub(env);
+  if (!(await h.claimKey("u" + u.update_id))) return new Response("ok"); // Telegram retry
+  const ownerId = Number(env.TG_OWNER_ID);
+  const users = ids(env.DIBI_ALLOWED_USERS || env.TG_OWNER_ID);
+  const chats = ids(env.DIBI_ALLOWED_CHATS);
+  const allowed = users.has(m.from?.id) || chats.has(m.chat.id);
+  const priv = m.chat.type === "private";
+  const thread = m.is_topic_message ? m.message_thread_id : 0;
+  const text = (m.text || "").trim();
+
+  if (priv && /^\/(start|help)\b/.test(text)) {
+    await dibiReply(env, m.chat.id, m.message_id, 0, allowed
+      ? "سلام! من دیبی‌ام 🎙️ ویس، فایل صوتی یا ویدیو‌مسیج بفرست، متنش رو برات می‌نویسم.\nتو گروه هم اگه منو اضافه کنی، ویس‌ها رو خودم می‌نویسم؛ یا روی یه ویس ریپلای کن و منو منشن کن."
+      : "سلام! این ربات شخصیه و فقط برای صاحبش کار می‌کنه.");
+    return new Response("ok");
+  }
+
+  let target: any = null;
+  if (audioOf(m)) target = m;
+  else if (m.reply_to_message && audioOf(m.reply_to_message) && /@\w*bot\b/i.test(text)) {
+    const me = await dtg(env, "getMe", {});
+    if (me.ok && new RegExp(`@${me.result.username}\\b`, "i").test(text)) target = m.reply_to_message;
+  }
+  if (!target) return new Response("ok");
+  if (!allowed) {
+    if (priv) await dibiReply(env, m.chat.id, m.message_id, 0, "این ربات شخصیه و فقط برای صاحبش کار می‌کنه.");
+    return new Response("ok");
+  }
+
+  const a = audioOf(target);
+  const ownerPost = ids(env.DIBI_OWNER_POST_CHATS || env.TG_GROUP_ID).has(m.chat.id) && target.from?.id === ownerId;
+  if ((a.file_size || 0) > 20 * 1024 * 1024) {
+    await dibiReply(env, m.chat.id, target.message_id, thread,
+      "این فایل از ۲۰ مگابایت بزرگ‌تره و تلگرام اجازه نمی‌ده ربات دانلودش کنه. فشرده‌ترش کن یا تیکه‌تیکه بفرست.");
+    return new Response("ok");
+  }
+  await dtg(env, "sendChatAction", { chat_id: m.chat.id, ...(thread && { message_thread_id: thread }), action: "typing" });
+
+  // Start the Soniox job now (synchronously: no waitUntil time limit; Telegram retries are de-duped above).
+  const H = { Authorization: `Bearer ${env.SONIOX_API_KEY}` };
+  let fid = "";
+  try {
+    const gf = await dtg(env, "getFile", { file_id: a.file_id });
+    if (!gf.ok) throw new Error("getFile: " + (gf.description || "?"));
+    const audio = await fetch(`https://api.telegram.org/file/bot${env.DIBI_BOT_TOKEN}/${gf.result.file_path}`);
+    if (!audio.ok) throw new Error("download " + audio.status);
+    const name = a.file_name || (gf.result.file_path.split("/").pop() || "audio.ogg").replace(/\.oga$/i, ".ogg");
+    const fd = new FormData();
+    fd.append("file", new Blob([await audio.arrayBuffer()]), name);
+    const up = await fetch("https://api.soniox.com/v1/files", { method: "POST", headers: H, body: fd });
+    if (!up.ok) throw new Error("soniox upload " + up.status + ": " + (await up.text()).slice(0, 200));
+    fid = ((await up.json()) as { id: string }).id;
+    const cb = new URL("/dibi/sx", req.url);
+    cb.search = new URLSearchParams({
+      c: String(m.chat.id), m: String(target.message_id), t: String(thread || 0),
+      s: (a.duration || 0) > 90 ? "1" : "0", o: ownerPost ? "1" : "0",
+    }).toString();
+    const cfg: Record<string, unknown> = {
+      model: DIBI_MODEL, file_id: fid, language_hints: ["fa", "en"], client_reference_id: "dibi",
+      webhook_url: cb.toString(), webhook_auth_header_name: "X-Dibi-Auth", webhook_auth_header_value: await dibiSecret(env),
+    };
+    if ((a.duration || 0) > 90) cfg.enable_speaker_diarization = true;
+    const tr = await fetch("https://api.soniox.com/v1/transcriptions", {
+      method: "POST", headers: { ...H, "Content-Type": "application/json" }, body: JSON.stringify(cfg),
+    });
+    if (!tr.ok) throw new Error("soniox create " + tr.status + ": " + (await tr.text()).slice(0, 200));
+    console.log("dibi started", m.chat.id, target.message_id);
+  } catch (e) {
+    const err = String((e as Error).message || e).slice(0, 300);
+    console.error("dibi start", err);
+    if (fid) await fetch(`https://api.soniox.com/v1/files/${fid}`, { method: "DELETE", headers: H }).catch(() => {});
+    await dibiDeliver(env, { chat: m.chat.id, msg: target.message_id, thread, ownerPost, fail: err });
+  }
+  return new Response("ok");
+}
+
+async function dibiSoniox(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  if (req.headers.get("X-Dibi-Auth") !== (await dibiSecret(env))) return new Response("forbidden", { status: 403 });
+  const url = new URL(req.url);
+  const p = (await req.json().catch(() => ({}))) as { id?: string; status?: string };
+  if (!p.id) return new Response("ok");
+  const h = hub(env);
+  if (!(await h.claimKey("sx" + p.id))) return new Response("ok"); // Soniox retry
+  const chat = Number(url.searchParams.get("c")), msg = Number(url.searchParams.get("m"));
+  const thread = Number(url.searchParams.get("t")) || 0;
+  const speakers = url.searchParams.get("s") === "1", ownerPost = url.searchParams.get("o") === "1";
+  const H = { Authorization: `Bearer ${env.SONIOX_API_KEY}` };
+  let fid = "";
+  try {
+    const job = (await (await fetch(`https://api.soniox.com/v1/transcriptions/${p.id}`, { headers: H })).json()) as any;
+    fid = job.file_id || "";
+    if (job.status !== "completed") throw new Error(job.error_message || "transcription " + (job.status || p.status));
+    const res = (await (await fetch(`https://api.soniox.com/v1/transcriptions/${p.id}/transcript`, { headers: H })).json()) as any;
+    const tokens: { text: string; speaker?: string }[] = res.tokens || [];
+    let text = "";
+    if (!speakers) text = (res.text || tokens.map((t) => t.text).join("")).trim();
+    else {
+      let cur: string | undefined;
+      for (const t of tokens) {
+        if (t.speaker && t.speaker !== cur) {
+          cur = t.speaker;
+          text += (text ? "\n\n" : "") + `گوینده ${cur}: ` + t.text.replace(/^\s+/, "");
+        } else text += t.text;
+      }
+      text = text.trim();
+    }
+    console.log("dibi ok", chat, msg, text.length + "ch");
+    await dibiDeliver(env, { chat, msg, thread, ownerPost, text: text || "(متنی شنیده نشد)" });
+  } catch (e) {
+    const err = String((e as Error).message || e).slice(0, 300);
+    console.error("dibi sx", err);
+    await dibiDeliver(env, { chat, msg, thread, ownerPost, fail: err });
+  } finally {
+    await fetch(`https://api.soniox.com/v1/transcriptions/${p.id}`, { method: "DELETE", headers: H }).catch(() => {});
+    if (fid) await fetch(`https://api.soniox.com/v1/files/${fid}`, { method: "DELETE", headers: H }).catch(() => {});
+  }
+  return new Response("ok");
+}
+
+// Owner's voice in the پسرخاله group + laptop alive → the bridge posts it as him (or answers the failure once).
+// Everything else (or laptop off) → Dibi replies as itself.
+async function dibiDeliver(env: Env, d: { chat: number; msg: number; thread: number; ownerPost: boolean; text?: string; fail?: string }) {
+  if (d.ownerPost && (await hub(env).laptopAlive())) {
+    await hub(env).pushDibi({ chat_id: d.chat, message_id: d.msg, ...(d.text ? { text: d.text } : { fail: d.fail || "" }) });
+    return;
+  }
+  await dibiReply(env, d.chat, d.msg, d.thread, d.text ?? failText(d.fail || ""));
+}

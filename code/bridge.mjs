@@ -821,18 +821,46 @@ function workerPollHttp(url, token, ms) {
   });
 }
 
+// دیبی runs in the Worker since 2026-11-17 (owner: the bot must work with the laptop off). The only laptop part:
+// a transcript of the owner's own voice in the پسرخاله group arrives here in the poll ({message_id, text|fail}),
+// and we post it FROM HIS ACCOUNT with post_as_owner.py, so it comes back as his typed reply (see ownerMessage).
+// If that fails, or the job failed, a signal file feeds the existing dibiPending fallback (answer once).
+function dibiFromWorker(d) {
+  const sigDir = join(process.env.USERPROFILE || '', 'dibi-bot', 'signals');
+  const signal = (kind, data) => {
+    try { mkdirSync(sigDir, { recursive: true }); writeFileSync(join(sigDir, `${kind}-${d.message_id}.json`), JSON.stringify(data)); }
+    catch (e) { log('dibi signal write', e.message); }
+  };
+  if (!d.text) return signal('fail', { err: d.fail || '' });
+  const py = env.DIBI_TG_PYTHON || join(process.env.USERPROFILE || '', 'tools', 'telegram-mcp', '.venv', 'Scripts', 'python.exe');
+  const p = spawn(py, [join(process.env.USERPROFILE || '', 'dibi-bot', 'post_as_owner.py'), String(d.message_id)], { windowsHide: true });
+  let out = '';
+  p.stdout.on('data', (x) => { out += x; });
+  p.stderr.on('data', (x) => { out += x; });
+  const t = setTimeout(() => p.kill(), 60000);
+  p.on('error', (e) => { clearTimeout(t); log('dibi post as owner', e.message); signal('text', { text: d.text }); });
+  p.on('close', (code) => {
+    clearTimeout(t);
+    if (code === 0) return log('dibi: posted as owner', d.message_id);
+    log('dibi post as owner failed', code, out.trim().slice(-200));
+    signal('text', { text: d.text });
+  });
+  p.stdin.end(d.text, 'utf8');
+}
+
 async function workerPoll() {
   log('telegram via worker', env.WORKER_URL);
   let fails = 0;
   for (;;) {
     try {
-      const { updates, lite } = await workerPollHttp(env.WORKER_URL + '/laptop/poll', env.LAPTOP_SECRET, 15000);
+      const { updates, lite, dibi = [] } = await workerPollHttp(env.WORKER_URL + '/laptop/poll', env.LAPTOP_SECRET, 15000);
       if (lite.length) {
         (state.liteBacklog ||= []).push(...lite);
         saveState();
         log('lite exchanges synced', lite.length);
       }
       for (const u of updates) tgUpdate(u);
+      for (const d of dibi) dibiFromWorker(d);
       if (fails) log('worker poll recovered after', fails, 'failed polls');
       fails = 0;
       workerPoll.lastOk = Date.now(); // the voice→text circuit breaker trusts the relay while this is fresh
