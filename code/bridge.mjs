@@ -1420,14 +1420,16 @@ const toolLine = (b) => {
 };
 
 const GLM_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'ToolSearch', 'Skill', 'WebSearch', 'WebFetch', 'mcp__telegram__*', 'mcp__my-chrome__*',
-  // Google via local workspace-mcp — calendar (read+write) and sheets/docs read only;
-  // Gmail send and Drive write/delete stay OUT of the allow-list on purpose (owner, 2026-11-12).
-  'mcp__google__get_events', 'mcp__google__manage_event', 'mcp__google__create_calendar', 'mcp__google__list_calendars',
-  'mcp__google__query_freebusy', 'mcp__google__read_sheet_values', 'mcp__google__get_spreadsheet_info',
-  'mcp__google__list_spreadsheets', 'mcp__google__get_doc_as_markdown', 'mcp__google__get_doc_content',
+  // Google via local workspace-mcp — FULL services for topic sessions (owner, 2026-11-19: «تا‌پیک جدید
+  // که میزنم دسترسی ندارن» — the old read-only list blocked doc/drive creation). Truly outward/irreversible
+  // pieces stay denied below; everything else (calendar, docs, sheets, drive create, gmail READ) is allowed.
+  'mcp__google__*',
   'Bash(node *)', 'Bash(python *)', 'Bash(ls *)', 'Bash(cat *)', 'Bash(head *)', 'Bash(tail *)', 'Bash(grep *)', 'Bash(date*)',
   'Bash(mkdir *)', 'Bash(git status*)', 'Bash(git log*)', 'Bash(git diff*)'];
-const GLM_DENY = ['Bash(git push*)', 'Bash(rm -rf*)', 'Bash(curl *)'];
+// deny wins over allow: sending email AS the owner and drive sharing/deletion need his explicit OK.
+const GLM_DENY = ['Bash(git push*)', 'Bash(rm -rf*)', 'Bash(curl *)',
+  'mcp__google__send_gmail_message*', 'mcp__google__draft_gmail_message*',
+  'mcp__google__manage_drive_access*', 'mcp__google__modify_gmail_message_labels*', 'mcp__google__delete*'];
 
 function runClaude(prompt, role = 'chat', model = null, key = 'main', agent = null, to = 'gap') {
   return new Promise((resolve) => {
