@@ -91,3 +91,17 @@
 {"id":"013f","kind":"msg","label":"#1083","t0":1795096838907,"steps":[{"s":"go","rel":3013},{"s":"go","rel":3014}],"status":"shell:Lock","ms":3306}
 {"id":"bf6b","kind":"msg","label":"#1508","t0":1795115793099,"steps":[{"s":"go","rel":3010},{"s":"files","rel":3303},{"s":"brain","rel":535392,"note":"claude-opus-5-5"}],"status":"ok","ms":536126}
 {"id":"40d7","kind":"msg","label":"#1508","t0":1795116565375,"steps":[{"s":"go","rel":3008},{"s":"files","rel":3295},{"s":"brain","rel":98523,"note":"claude-opus-5-5"}],"status":"ok","ms":111800}
+{"id":"49c0","kind":"msg","label":"#794","t0":1795116749741,"steps":[{"s":"go","rel":3012},{"s":"files","rel":3301},{"s":"brain","rel":875706,"note":"claude-opus-5-5"}],"status":"ok","ms":876517}
+{"id":"c042","kind":"msg","label":"#1508","t0":1795119070771,"steps":[{"s":"go","rel":3007},{"s":"files","rel":3271},{"s":"brain","rel":141111,"note":"claude-opus-5-5"}],"status":"ok","ms":142037}
+{"id":"7f77","kind":"msg","label":"#1508","t0":1795119766599,"steps":[{"s":"go","rel":3003},{"s":"files","rel":3185},{"s":"brain","rel":94600,"note":"claude-opus-5-5"}],"status":"ok","ms":95233}
+{"id":"0d59","kind":"msg","label":"#1508","t0":1795241031688,"steps":[{"s":"go","rel":3013},{"s":"files","rel":6803},{"s":"brain","rel":148145,"note":"claude-opus-5-5"}],"status":"ok","ms":148689}
+{"id":"1ba7","kind":"msg","label":"#1508","t0":1795241038749,"steps":[{"s":"go","rel":142294},{"s":"files","rel":142797},{"s":"brain","rel":328898,"note":"claude-opus-5-5"}],"status":"ok","ms":329457}
+{"id":"76ee","kind":"msg","label":"#1508","t0":1795241042439,"steps":[{"s":"go","rel":326286},{"s":"files","rel":326807},{"s":"brain","rel":513968,"note":"claude-opus-5-5"}],"status":"ok","ms":514802}
+{"id":"3859","kind":"msg","label":"#1508","t0":1795241515224,"steps":[{"s":"go","rel":42585},{"s":"files","rel":42823},{"s":"brain","rel":97232,"note":"claude-opus-5-5"}],"status":"ok","ms":97609}
+{"id":"e93d","kind":"msg","label":"#51","t0":1795266833957,"steps":[{"s":"go","rel":3011},{"s":"files","rel":3204},{"s":"brain","rel":93606,"note":"claude-opus-5-5"}],"status":"ok","ms":94090}
+{"id":"f1f8","kind":"msg","label":"#51","t0":1795267095400,"steps":[{"s":"go","rel":3007},{"s":"files","rel":3195},{"s":"brain","rel":119773,"note":"claude-opus-5-5"}],"status":"ok","ms":120046}
+{"id":"5169","kind":"msg","label":"#20","t0":1795267335408,"steps":[{"s":"go","rel":3011},{"s":"files","rel":3216},{"s":"brain","rel":138347,"note":"glm-5.3"}],"status":"ok","ms":138754}
+{"id":"a6e9","kind":"msg","label":"#20","t0":1795268015249,"steps":[{"s":"go","rel":3014},{"s":"files","rel":3190},{"s":"brain","rel":69729,"note":"glm-5.3-flash"}],"status":"ok","ms":69915}
+{"id":"290a","kind":"msg","label":"#20","t0":1795268032312,"steps":[{"s":"go","rel":53006},{"s":"files","rel":53366},{"s":"brain","rel":71622,"note":"glm-5.3-flash"}],"status":"ok","ms":71983}
+{"id":"5f65","kind":"msg","label":"#20","t0":1795273939441,"steps":[{"s":"go","rel":3013},{"s":"files","rel":3198},{"s":"brain","rel":113061,"note":"claude-opus-5-5"}],"status":"ok","ms":113294}
+{"id":"5549","kind":"msg","label":"#20","t0":1795274143155,"steps":[{"s":"go","rel":3014},{"s":"files","rel":3284},{"s":"brain","rel":42639,"note":"glm-5.3"}],"status":"ok","ms":42872}
